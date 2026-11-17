@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { usePoll } from "../hooks";
-import type { DriversPanel, Horizon, LearningPayload, NewsPayload, Prediction, PricePayload, TaskStatus } from "../types";
-import { fmtAgo, fmtEt, num, signed } from "../format";
+import type { DriversPanel, ForwardPayload, FrozenForecast, Horizon, LearningPayload, NewsPayload, Prediction, PricePayload, TaskStatus, TodayPayload } from "../types";
+import { etDate, fmtAgo, fmtEt, num, signed, timeBoth } from "../format";
+import { baseDate } from "./ForecastCards";
 import { Backtest } from "./Backtest";
 import { GldComparison } from "./GldComparison";
 import { MarketContext } from "./MarketContext";
@@ -34,7 +35,31 @@ function TaskRow({ id, t }: { id: string; t: TaskStatus }) {
   );
 }
 
-function ModelTab() {
+/** The exact forecasts shown on the cards, with the technical detail the cards leave out: model, version, target definition, inputs. */
+function ShownForecast({ title, f, referenceNote, cal }: { title: string; f: FrozenForecast | undefined; referenceNote: string; cal?: { historical_pct: number | null; ci90_pct?: [number, number] | null; n_dates?: number | null; historical_basis?: string; by_period_pct?: number[] | null; forward_n?: number; forward_pct?: number | null } }) {
+  if (!f) return <div className="gx-task"><div className="gx-task-head"><b>{title}</b></div><p className="gx-muted">No forecast issued yet.</p></div>;
+  const t = Date.parse(f.target_time), ms = (sec: number) => `${etDate(sec * 1000, true)}, ${timeBoth(sec * 1000)}`;
+  return (
+    <div className="gx-task" data-testid={`shown-${title.startsWith("Next") ? "next" : "fwd"}`}>
+      <div className="gx-task-head"><b>{title}</b><span className="gx-chip">{f.source.kind === "baseline" ? "Unchanged-price baseline" : "Model forecast"}</span></div>
+      <dl className="gx-kv">
+        <div><dt>Source</dt><dd>{f.source.kind === "baseline" ? "No model is in control: the prediction equals the futures price when issued (no adjustment, rounded to the cent)." : `${f.source.algorithm.replace("_", " ")} (${f.source.role}) on ${f.source.feature_schema} features`}</dd></div>
+        <div><dt>Version</dt><dd className="mono">{f.source.version}</dd></div>
+        <div><dt>Forecast id</dt><dd className="mono">{f.forecast_id}</dd></div>
+        <div><dt>Target</dt><dd>{f.source.target_def}</dd></div>
+        <div><dt>Target time</dt><dd>{ms(t / 1000)}</dd></div>
+        <div><dt>Reference</dt><dd><span className="mono">${num(f.reference_price)}</span> · {referenceNote}</dd></div>
+        <div><dt>Change from reference</dt><dd className="mono">{signed(f.change)} / {signed(f.change_pct)}%{f.little_change ? ` (below the ${num(f.little_change_threshold_pct, 2)}% "little change" display threshold)` : ""}</dd></div>
+        <div><dt>Inputs cut off</dt><dd>{ms(f.input_cutoff)}</dd></div>
+        <div><dt>Issued</dt><dd>{ms(f.issued_at)}</dd></div>
+        <div><dt>{Math.round(f.level * 100)}% range</dt><dd className="mono">${num(f.low)}–${num(f.high)}</dd></div>
+        {cal && <div><dt>Range calibration</dt><dd>{cal.historical_pct != null ? `${num(cal.historical_pct, 0)}% historical coverage` : "not yet measured"}{cal.ci90_pct ? ` (90% interval ${num(cal.ci90_pct[0], 0)}–${num(cal.ci90_pct[1], 0)}%)` : ""}{cal.n_dates ? ` over ${cal.n_dates} ${cal.historical_basis?.includes("session") ? "sessions" : "dates"}` : ""}{cal.historical_basis ? `, ${cal.historical_basis}` : ""}.{cal.by_period_pct ? ` By period (oldest → newest): ${cal.by_period_pct.map((x) => `${num(x, 0)}%`).join(" · ")}.` : ""} {cal.forward_n ? `Live matured: ${cal.forward_n}${cal.forward_pct != null ? `, ${num(cal.forward_pct, 0)}% inside` : ""}.` : "No live outcomes have matured yet."}</dd></div>}
+      </dl>
+    </div>
+  );
+}
+
+function ModelTab({ today, forward }: { today: TodayPayload | null; forward: ForwardPayload | null }) {
   const { data, error, refresh } = usePoll<LearningPayload>(api.learning, 30000, "learning");
   if (!data) return error ? <ErrorBlock title="Could not load model details" message={error} onRetry={refresh} /> : <Skeleton h={240} />;
   const w = data.worker;
@@ -48,6 +73,11 @@ function ModelTab() {
           <div><dt>Matured forecasts</dt><dd className="mono">{data.matured_total} scored of {data.issued_total} logged</dd></div>
           <div><dt>Spot ticks recorded</dt><dd className="mono">{w.spot_ticks.toLocaleString()}</dd></div>
         </dl>
+      </section>
+      <section data-testid="shown-forecasts">
+        <h3>Forecasts shown on the cards</h3>
+        <ShownForecast title="Next settlement" f={today?.forecast} cal={today?.calibration} referenceNote="latest futures price at issue" />
+        <ShownForecast title={`${forward?.horizon ?? ""}-session forecast`} f={forward?.forecast} cal={forward?.calibration} referenceNote={`official settlement of ${baseDate(forward?.base_date)}`} />
       </section>
       <section>
         <h3>Current model per forecast</h3>
@@ -222,7 +252,7 @@ function DataTab({ onChanged }: { onChanged: () => void }) {
 }
 
 // ------------------------------------------------------------------------------------------------ Drawer
-export function Drawer({ open, tab, onTab, onClose, onDataChanged }: { open: boolean; tab: DrawerTab; onTab: (t: DrawerTab) => void; onClose: () => void; onDataChanged: () => void }) {
+export function Drawer({ today, forward, open, tab, onTab, onClose, onDataChanged }: { today: TodayPayload | null; forward: ForwardPayload | null; open: boolean; tab: DrawerTab; onTab: (t: DrawerTab) => void; onClose: () => void; onDataChanged: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -244,7 +274,7 @@ export function Drawer({ open, tab, onTab, onClose, onDataChanged }: { open: boo
           {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)} data-testid={`dtab-${t.id}`}>{t.label}</button>)}
         </div>
         <div className="gx-drawer-body">
-          {tab === "model" && <ModelTab />}
+          {tab === "model" && <ModelTab today={today} forward={forward} />}
           {tab === "drivers" && <DriversTab />}
           {tab === "backtest" && <BacktestTab />}
           {tab === "news" && <NewsTab />}

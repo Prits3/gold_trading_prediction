@@ -22,7 +22,7 @@ export default function App() {
   const [mode, setMode] = useStored<"line" | "candles">("gold.mode", "candles");
   const [view, setView] = useState<ChartView>("history"); // always opens on price history
   const [horizon, setHorizon] = useStored<Horizon>("gold.horizon", 5);
-  const [target, setTarget] = useState<ForecastTarget>("next");
+  const [sel, setSel] = useState<"next" | "forward">("next"); // which forecast card is shown on the Forecast chart
   const [drawer, setDrawer] = useState<{ open: boolean; tab: DrawerTab }>({ open: false, tab: "model" });
   const [chartConn, setChartConn] = useState<Conn>("ok");
   const [dataRev, setDataRev] = useState(0);
@@ -31,6 +31,12 @@ export default function App() {
   const today = usePoll(api.today, 20000, `today:${dataRev}`);
   const forward = usePoll(() => api.forward(horizon), 300000, `fwd:${horizon}:${dataRev}`);
   const conn: Conn = chartConn !== "ok" ? chartConn : summary.conn;
+  // The chart's target is always the selected card's: "next", or the forward card's current horizon. One source of truth, so they cannot disagree.
+  const target: ForecastTarget = sel === "next" ? "next" : horizon;
+  const fwdForChart = forward.data && forward.data.horizon === horizon ? forward.data : null;
+  const canShow = instrument === "futures";
+  const select = (which: "next" | "forward") => { if (!canShow) return; setSel(which); setView("forecast"); };
+  const onTarget = (t: ForecastTarget) => { if (t === "next") setSel("next"); else { setHorizon(t); setSel("forward"); } };
   // Spot has no forecast view: leave it rather than silently showing futures on a spot screen.
   const effView: ChartView = instrument === "spot" ? "history" : view;
 
@@ -50,20 +56,21 @@ export default function App() {
           </p>
         )}
         <div className="gx-cards">
-          <NextSettlementCard d={today.data} err={today.error} />
-          <ForwardCard d={forward.data} err={forward.error} horizon={horizon} onHorizon={(h) => { setHorizon(h); if (effView === "forecast") setTarget(h); }} />
+          <NextSettlementCard d={today.data} err={today.error} selected={effView === "forecast" && sel === "next"} onSelect={() => select("next")} canShow={canShow} onDetails={() => setDrawer({ open: true, tab: "model" })} />
+          <ForwardCard d={forward.data} err={forward.error} horizon={horizon} onHorizon={(h) => { setHorizon(h); if (effView === "forecast") setSel("forward"); }}
+            selected={effView === "forecast" && sel === "forward"} onSelect={() => select("forward")} canShow={canShow} onDetails={() => setDrawer({ open: true, tab: "model" })} />
         </div>
       </section>
 
       <ChartPanel instrument={instrument} summary={summary.data} view={effView} onView={setView} range={range} onRange={setRange} mode={mode} onMode={setMode}
-        target={target} onTarget={setTarget} today={today.data} onConn={setChartConn} conn={conn} />
+        target={target} onTarget={onTarget} today={today.data} forward={fwdForChart} onConn={setChartConn} conn={conn} />
 
       <button className="gx-link" onClick={() => setDrawer({ open: true, tab: "model" })} data-testid="open-details-2">Model details, methodology & data →</button>
       <footer className="gx-footer">
         For information only — not investment advice. Forecasts are statistical estimates; the price may differ. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts™</a>.
       </footer>
 
-      <Drawer open={drawer.open} tab={drawer.tab} onTab={(tab) => setDrawer({ open: true, tab })} onClose={() => setDrawer((d) => ({ ...d, open: false }))} onDataChanged={() => setDataRev((n) => n + 1)} />
+      <Drawer today={today.data} forward={forward.data} open={drawer.open} tab={drawer.tab} onTab={(tab) => setDrawer({ open: true, tab })} onClose={() => setDrawer((d) => ({ ...d, open: false }))} onDataChanged={() => setDataRev((n) => n + 1)} />
     </div>
   );
 }

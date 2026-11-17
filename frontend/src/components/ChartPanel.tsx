@@ -1,6 +1,4 @@
 import { useState } from "react";
-import { usePoll } from "../hooks";
-import { api } from "../api";
 import type { Conn, ForwardPayload, Horizon, InstrumentKey, MarketSummary, OhlcPayload, RangeKey, TodayPayload } from "../types";
 import { INTERVAL_WORDS } from "../chartKit";
 import { fmtAgo } from "../format";
@@ -12,18 +10,18 @@ export type ForecastTarget = "next" | Horizon;
 const RANGES: RangeKey[] = ["1D", "1W", "1M", "3M", "1Y", "5Y"];
 const TARGETS: { id: ForecastTarget; label: string }[] = [{ id: "next", label: "Next settlement" }, { id: 1, label: "1 session" }, { id: 5, label: "5 sessions" }, { id: 20, label: "20 sessions" }];
 
-export function ChartPanel({ instrument, summary, view, onView, range, onRange, mode, onMode, target, onTarget, today, onConn, conn }: {
+export function ChartPanel({ instrument, summary, view, onView, range, onRange, mode, onMode, target, onTarget, today, forward, onConn, conn }: {
   instrument: InstrumentKey; summary: MarketSummary | null; view: ChartView; onView: (v: ChartView) => void; range: RangeKey; onRange: (r: RangeKey) => void;
   mode: "line" | "candles"; onMode: (m: "line" | "candles") => void; target: ForecastTarget; onTarget: (t: ForecastTarget) => void;
-  today: TodayPayload | null; onConn: (c: Conn) => void; conn: Conn;
+  today: TodayPayload | null; forward: ForwardPayload | null; onConn: (c: Conn) => void; conn: Conn;
 }) {
   const [meta, setMeta] = useState<OhlcPayload | null>(null);
   const [info, setInfo] = useState(false);
   const forecastOn = view === "forecast" && instrument === "futures";
-  // The chart's own forward forecast (independent of the card's selector) - read from the ledger, so it never changes with quotes.
-  const fwd = usePoll<ForwardPayload>(() => api.forward(target === "next" ? 5 : target), 300000, `chartfwd:${target}`, forecastOn && target !== "next");
-  const fc = target === "next" ? today?.forecast ?? null : fwd.data?.forecast ?? null;
-  const res = target === "next" ? today?.result ?? null : fwd.data?.result ?? null;
+  // The chart draws the SAME frozen forecast the selected card shows (one payload, no second fetch).
+  const src = target === "next" ? today : forward;
+  const fc = src?.forecast ?? null;
+  const res = src?.result ?? null;
 
   const word = meta ? INTERVAL_WORDS[meta.interval] ?? meta.interval : "";
   const delay = meta?.delay_seconds;

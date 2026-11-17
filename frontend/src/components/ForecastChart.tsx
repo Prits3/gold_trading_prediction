@@ -161,8 +161,8 @@ export function ForecastChart({ sel, forecast, result, mode, onMeta, onConn }: {
       add("latest", { x: lx!, y: ly! }, "right", `Latest ${num(lastBar.close)}`, undefined, 0, "hist");
       add("ref", { x: ox!, y: oy! }, "right", `Reference ${num(f.reference_price)}`, narrow ? undefined : "when issued", up ? 30 : -30, "ref");
       // The target's date and time sit ON its price label, so the target date is never disconnected from its price.
-      const when = `${fmtIsoEt(f.target_time, { weekday: "short", day: "numeric", month: "short" })} · ${fmtIsoEt(f.target_time, { hour: "2-digit", minute: "2-digit", hour12: false })} ET`;
-      add("forecast", { x: tx!, y: yp! }, "right", num(f.predicted), when, up ? -34 : 34, "forecast", f.source.kind === "baseline" ? "Unchanged-price baseline" : f.source.label);
+      const when = `${fmtIsoEt(f.target_time, { weekday: "short", day: "numeric", month: "short" })} · ${fmtIsoEt(f.target_time, { hour: "2-digit", minute: "2-digit", hour12: false })} New York`;
+      add("forecast", { x: tx!, y: yp! }, "right", num(f.predicted), when, up ? -34 : 34, "forecast", f.source.kind === "baseline" ? "Unchanged-price baseline" : "Model forecast");
       add("high", { x: tx!, y: yh! }, "right", `${Math.round(f.level * 100)}% high ${num(f.high)}`, undefined, -4, "range");
       add("low", { x: tx!, y: yl! }, "right", `${Math.round(f.level * 100)}% low ${num(f.low)}`, undefined, 4, "range");
       add("conn", { x: (ox! + tx!) / 2, y: (oy! + yp!) / 2 }, "center", "Illustrative connection", undefined, up ? 16 : -16, "conn");

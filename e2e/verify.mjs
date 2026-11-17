@@ -92,8 +92,11 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
   // ---- forecast cards: frozen values, sentence, source label, range wording ----
   const tj = await api("/forecast/today");
   const card = await page.textContent('[data-testid="today-card"]');
-  check("next-settlement card: predicted price, target weekday/date/time/ET, change from reference, range, issued", /\$[\d,]+\.\d\d/.test(await txt(page, "today-pred")) && /ET/.test(card) && /Change from reference/.test(card) && /range/.test(card) && /Issued/.test(card), await txt(page, "today-pred"));
-  check("the plain sentence names the instrument, the target and the price when issued", /gold futures (at|\w+ at) \$[\d,]+\.\d\d by .* ET/.test(await txt(page, "today-sentence")) && /when this forecast was issued|the price when this forecast was issued/.test(await txt(page, "today-sentence")), await txt(page, "today-sentence"));
+  const tgt0 = await txt(page, "today-target");
+  check("next-settlement card: price, target weekday/date, New York and Berlin time, reference, prediction range, issued", /\$[\d,]+\.\d\d/.test(await txt(page, "today-pred")) && /^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}( \d{4})? · \d\d:\d\d New York · \d\d:\d\d Berlin/.test(tgt0) && /Reference \$[\d,]+\.\d\d/.test(card) && /Prediction range: \$[\d,]+\.\d\d–\$[\d,]+\.\d\d/.test(card) && /Issued .*New York/.test(card), tgt0);
+  check("timezone labels are not duplicated (each zone named once in the target line; no 'ET' abbreviations on the cards)", (tgt0.match(/New York/g) || []).length === 1 && (tgt0.match(/Berlin/g) || []).length === 1 && !/\bET\b/.test(card + await page.textContent('[data-testid="forward-card"]')), tgt0);
+  check("the card shows no model id or version name (those live in Model details)", !/nowcast:|fwd_\d|price_now_v1|gold_v1|ridge|random forest/i.test(card + await page.textContent('[data-testid="forward-card"]')));
+  check("the reference price sits beside the change and says what it is", /Reference \$[\d,]+\.\d\d · the latest futures price when issued/.test(await txt(page, "today-ref")) && /change [+−]\$[\d.,]+/.test(await txt(page, "today-ref")), await txt(page, "today-ref"));
   check("audit: a copied current price is labelled 'Unchanged-price baseline', not presented as a learned prediction", tj.forecast.source.kind === "baseline" ? /Unchanged-price baseline/.test(await txt(page, "source-chip")) && /No model is in control/.test(await txt(page, "today-sentence")) : true, `${tj.forecast.source.label} (${tj.forecast.source.version})`);
   check("near-identical prediction says 'Little change predicted'", tj.forecast.little_change ? /Little change predicted/.test(await txt(page, "today-vs")) : !/Little change predicted/.test(await txt(page, "today-vs")), `change ${tj.forecast.change_pct}%`);
   check("the live quote comparison is separately labelled", /Latest futures quote/.test(await page.textContent('[data-testid="today-card"]')) || tj.status === "completed");
@@ -107,15 +110,15 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
     await page.waitForFunction(() => !/Loading forecast/.test(document.querySelector('[data-testid="forward-card"]')?.textContent || ""), null, { timeout: 60000 });
     await page.waitForTimeout(400);
     const none = await page.locator('[data-testid="fwd-none"]').count();
-    seen[h] = none ? { none: true, why: (await txt(page, "fwd-none")) } : { p: num(await txt(page, "fwd-pred")), cal: (await page.textContent('[data-testid="forward-card"] [data-testid="calibration"]')).trim(), lbl: await page.locator('[data-testid="forward-card"] [data-testid="calibration-label"]').count(), target: (await page.textContent('[data-testid="forward-card"] .gx-facts > div:first-child dd')).trim(), sent: await txt(page, "fwd-sentence") };
+    seen[h] = none ? { none: true, why: (await txt(page, "fwd-none")) } : { p: num(await txt(page, "fwd-pred")), cal: (await page.textContent('[data-testid="forward-card"] [data-testid="calibration"]')).trim(), lbl: await page.locator('[data-testid="forward-card"] [data-testid="calibration-label"]').count(), target: (await page.textContent('[data-testid="forward-card"] [data-testid="fwd-target"]')).trim(), ref: await txt(page, "fwd-ref"), chg: await txt(page, "fwd-change") };
     await page.screenshot({ path: `${OUT}/desktop-forward-${h}.png`, clip: { x: 0, y: 250, width: 1440, height: 560 } });
   }
   check("all horizons: 5 and 20 have distinct future targets; 1 session is valid OR explained", seen[5].p > 500 && seen[20].p > 500 && seen[5].target !== seen[20].target && (seen[1].none ? /settlement|session|provider/.test(seen[1].why) : seen[1].p > 500), JSON.stringify({ 1: seen[1].none ? "explained" : seen[1].target, 5: seen[5].target, 20: seen[20].target }));
   check("1-session: any wait is explained as a genuine provider/session delay, not a bare 'pending'", seen[1].none ? seen[1].why.length > 60 : true, (seen[1].why || "").slice(0, 110));
   const learn = await api("/learning");
-  check("20-session: 'Target coverage: 80%. Historical coverage: X%' and 'Under-calibrated' when materially below", /Target coverage: 80%\. Historical coverage: \d+%/.test(seen[20].cal) && (learn.tasks.fwd_20.calibration.historical_pct < 72 ? seen[20].lbl === 1 && /Under-calibrated/.test(seen[20].cal) : seen[20].lbl === 0), seen[20].cal.replace(/\s+/g, " ").slice(0, 125));
-  check("5-session: coverage wording present and not labelled under-calibrated when close to 80%", /Target coverage: 80%\. Historical coverage: \d+%/.test(seen[5].cal) && seen[5].lbl === 0, seen[5].cal.replace(/\s+/g, " ").slice(0, 100));
-  check("coverage is reported together with range width", /Range width ≈ \$\d+/.test(seen[20].cal) && /Range width ≈ \$\d+/.test(seen[5].cal));
+  check("20-session: '80% target range · historical coverage X%' with 'Under-calibrated' when materially below", /80% target range · historical coverage \d+%/.test(seen[20].cal) && (learn.tasks.fwd_20.calibration.historical_pct < 72 ? seen[20].lbl === 1 && /Under-calibrated/.test(seen[20].cal) : seen[20].lbl === 0), seen[20].cal.replace(/\s+/g, " ").slice(0, 125));
+  check("5-session: range wording present and not labelled under-calibrated when close to 80%", /80% range · historical coverage \d+%/.test(seen[5].cal) && seen[5].lbl === 0, seen[5].cal.replace(/\s+/g, " ").slice(0, 100));
+  check("each forward card gives its prediction range with the reference price beside the change", /Prediction range: \$[\d,]+\.\d\d–\$[\d,]+\.\d\d/.test(seen[20].cal) && /Reference \$[\d,]+\.\d\d · official settlement of .*\d{4}/.test(seen[20].ref) && /versus the forecast's base close/.test(seen[20].chg), seen[20].ref + " | " + seen[20].chg);
   await page.click('[data-testid="h-5"]'); await page.waitForTimeout(1500);
 
   // ---- forecast view ----
@@ -132,7 +135,7 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
     const a = audits[t];
     check(`forecast view (${t}): latest, reference, forecast, range and 'Illustrative connection' labels are shown`, ["latest", "ref", "forecast", "high", "low", "conn"].every((k) => a.ids.includes(k)), a.ids.join(","));
     check(`forecast view (${t}): labels never overlap, are never clipped, never sit under the chart or over the price axis`, a.overlaps.length === 0 && a.clipped.length === 0 && a.covered.length === 0 && a.overAxis.length === 0, `overlaps ${a.overlaps.join(",") || "none"} clipped ${a.clipped.join(",") || "none"} covered ${a.covered.join(",") || "none"} overAxis ${a.overAxis.join(",") || "none"}`);
-    check(`forecast view (${t}): the target's date and time are written on its price label`, /\d{1,2} \w{3} · \d\d:\d\d ET/.test(a.forecastText), a.forecastText.trim().slice(0, 70));
+    check(`forecast view (${t}): the target's date and time are written on its price label`, /\d{1,2} \w{3} · \d\d:\d\d New York/.test(a.forecastText), a.forecastText.trim().slice(0, 70));
   }
   check("forecast view (1 session, none issued): no fake target is drawn", audits["1"].n === 0 || audits["1"].ids.includes("forecast"), audits["1"].ids.join(",") || "no labels");
   await page.click('[data-testid="target-5"]'); await page.waitForTimeout(2500);
@@ -144,6 +147,37 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
   await page.click('[data-testid="view-history"]'); await page.waitForTimeout(1500);
   check("returning to Price history keeps the selected range (1M) and removes all forecast drawing", (await page.getAttribute('[data-testid="range-1M"]', "aria-selected")) === "true" && (await page.locator('[data-testid^="fc-label-"]').count()) === 0);
   await page.click('[data-testid="range-1D"]'); await page.waitForTimeout(1500);
+
+  // ---- selecting a forecast card drives the Forecast chart ----
+  const sel = async (id) => page.getAttribute(`[data-testid="${id}"]`, "data-selected");
+  check("in Price history neither card is highlighted", (await sel("today-card")) === "false" && (await sel("forward-card")) === "false");
+  const matches = async (cardId, predId) => {
+    const pred = await txt(page, predId);
+    const a = await labelAudit(page);
+    const f = await page.locator('[data-testid="fc-label-forecast"]').textContent();
+    const hi = await page.locator('[data-testid="fc-label-high"]').textContent();
+    const lo = await page.locator('[data-testid="fc-label-low"]').textContent();
+    const ref = await page.locator('[data-testid="fc-label-ref"]').textContent();
+    const cardTxt = await page.textContent(`[data-testid="${cardId}"]`);
+    const rng = cardTxt.match(/Prediction range: \$([\d,]+\.\d\d)–\$([\d,]+\.\d\d)/);
+    const refC = cardTxt.match(/Reference \$([\d,]+\.\d\d)/);
+    return { ok: f.includes(pred.replace("$", "")) && !!rng && hi.includes(rng[2]) && lo.includes(rng[1]) && !!refC && ref.includes(refC[1]) && a.overlaps.length === 0 && a.clipped.length === 0, detail: `${pred} ${rng?.[1]}–${rng?.[2]} ref ${refC?.[1]} | ${f.replace(/\s+/g, " ").slice(0, 60)}` };
+  };
+  await page.click('[data-testid="forward-card"] .gx-big'); await page.waitForTimeout(3500);
+  check("clicking the forward card opens the Forecast view with that card highlighted", (await page.getAttribute('[data-testid="view-forecast"]', "aria-selected")) === "true" && (await sel("forward-card")) === "true" && (await sel("today-card")) === "false");
+  let m = await matches("forward-card", "fwd-pred");
+  check("forward card selected: chart target, reference and range equal the card exactly", m.ok, m.detail);
+  await page.click('[data-testid="today-card"] .gx-big'); await page.waitForTimeout(3500);
+  check("clicking Next settlement highlights it and moves the selector to Next settlement", (await sel("today-card")) === "true" && (await sel("forward-card")) === "false" && (await page.getAttribute('[data-testid="target-next"]', "aria-selected")) === "true");
+  m = await matches("today-card", "today-pred");
+  check("next settlement selected: chart target, reference and range equal the card exactly", m.ok, m.detail);
+  await page.click('[data-testid="forward-card"] [data-testid="h-20"]'); await page.waitForTimeout(3500);
+  m = await matches("forward-card", "fwd-pred");
+  check("changing the card's horizon in Forecast view re-targets the chart (20 sessions)", (await sel("forward-card")) === "true" && (await page.getAttribute('[data-testid="target-20"]', "aria-selected")) === "true" && m.ok, m.detail);
+  await page.click('[data-testid="target-5"]'); await page.waitForTimeout(3000);
+  check("choosing 5 sessions on the chart selector updates the forward card to 5 sessions", /^5-SESSION/.test(await page.textContent('[data-testid="forward-card"] h2')) && (await sel("forward-card")) === "true");
+  await page.click('[data-testid="view-history"]'); await page.waitForTimeout(1200);
+  check("back in Price history the cards are unselected and the range is kept", (await sel("forward-card")) === "false" && (await page.getAttribute('[data-testid="range-1D"]', "aria-selected")) === "true");
 
   const orig = await page.evaluate(() => { const c = window.__gxChart; const r = c.timeScale().getVisibleLogicalRange(); c.timeScale().setVisibleLogicalRange({ from: r.from + 30, to: r.to - 10 }); return r; });
   await page.waitForTimeout(500);
