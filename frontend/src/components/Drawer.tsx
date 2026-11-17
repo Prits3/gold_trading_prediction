@@ -53,6 +53,23 @@ function ModelTab() {
         <h3>Current model per forecast</h3>
         {Object.entries(data.tasks).map(([id, t]) => <TaskRow key={id} id={id} t={t} />)}
       </section>
+      <section data-testid="calibration-audit">
+        <h3>Range calibration audit (claimed 80%)</h3>
+        <table className="gx-table"><thead><tr><th>Forecast</th><th>Historical coverage</th><th>Oldest → newest period</th><th>Avg width</th><th>Verdict</th></tr></thead>
+          <tbody>{Object.entries(data.tasks).filter(([id]) => id !== "nowcast").map(([id, t]) => {
+            const c = t.calibration;
+            return (
+              <tr key={id} data-testid={`cal-${id}`}>
+                <td>{TASK_NAME[id]}</td>
+                <td className="mono">{c?.historical_pct != null ? `${num(c.historical_pct, 0)}%` : "—"}{c?.ci90_pct ? <span className="gx-muted"> ({num(c.ci90_pct[0], 0)}–{num(c.ci90_pct[1], 0)})</span> : null}</td>
+                <td className="mono">{c?.by_period_pct ? c.by_period_pct.map((x) => `${num(x, 0)}%`).join(" · ") : "—"}</td>
+                <td className="mono">{c?.mean_width_pct != null ? `${num(c.mean_width_pct, 1)}%` : "—"}</td>
+                <td>{c?.label ? <span className="gx-warn">{c.label}</span> : c?.historical_pct != null ? "Within tolerance" : "—"}</td>
+              </tr>
+            );
+          })}</tbody></table>
+        <p className="gx-micro">Chronological walk-forward: every range is built only from information available at its forecast date, over the same forecast dates for each horizon. Coverage and width are reported together, with a 90% block-bootstrap interval (overlapping targets are not independent). “Under-calibrated” means more than 8 points below the claimed 80%. Ranges are not tuned or widened after the fact. Live matured outcomes are added as they arrive; none have matured yet in a fresh ledger.</p>
+      </section>
       <section>
         <h3>How a model gets promoted</h3>
         <ol className="gx-rule">{data.rule.map((r, i) => <li key={i}>{r}</li>)}</ol>

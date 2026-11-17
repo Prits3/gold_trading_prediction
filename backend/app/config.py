@@ -25,6 +25,10 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MIN_ROWS = 500  # minimum daily observations for features + validation/calibration/holdout periods
 MAX_ABS_DAILY_MOVE = 0.30  # a >30% one-day move in gold is treated as a data error
 HORIZONS = (1, 5, 20)
+# A daily bar is only a completed observation once its session has ended AND its close agrees with the settlement-time price.
+# Measured over 48 sessions: the finalised GC=F daily close is within $1.50 of the 5-minute close at 13:25 ET (mean $0.48).
+SESSION_END_ET = os.getenv("GOLD_SESSION_END_ET", "17:00" if os.getenv("GOLD_SYMBOL", "GC=F") == "GC=F" else "")
+SETTLEMENT_TOLERANCE_USD = float(os.getenv("GOLD_SETTLEMENT_TOLERANCE", "2.0"))
 
 # Optional: Alpaca market data for the GLD ETF comparison view (read-only; never a model input).
 # Keys stay on the server: they are never returned by the API, logged, or included in error messages.

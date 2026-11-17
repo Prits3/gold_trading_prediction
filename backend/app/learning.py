@@ -14,6 +14,7 @@ Live price ticks never train anything.
 """
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 
@@ -68,6 +69,40 @@ def cols_for(schema: str) -> list[str]:
     if schema == "drivers_v1":
         return list(FEATURE_NAMES) + ["d_" + c for c in drivers.ALL_DRIVER_FEATURES]
     raise ValueError(schema)
+
+
+TARGET_COVERAGE_PCT = 80.0
+UNDER_CALIBRATED_MARGIN = 8.0        # "materially below target": more than 8 points under
+LITTLE_CHANGE_PCT_PER_SQRT_SESSION = 0.10  # display rule only: |change| < 0.10% x sqrt(horizon in sessions) is shown as "little change"
+
+
+def calibration_label(historical_pct: float | None, target: float = TARGET_COVERAGE_PCT) -> str | None:
+    """'Under-calibrated' when the measured historical coverage is materially (> 8 points) below the claimed coverage."""
+    if historical_pct is None:
+        return None
+    return "Under-calibrated" if historical_pct < target - UNDER_CALIBRATED_MARGIN else None
+
+
+def little_change(change_pct: float, horizon_sessions: float = 1.0) -> tuple[bool, float]:
+    """Display threshold for 'Little change predicted'. A presentation rule only: it is not a confidence level or an edge."""
+    thr = LITTLE_CHANGE_PCT_PER_SQRT_SESSION * float(np.sqrt(max(horizon_sessions, 1.0)))
+    return abs(change_pct) < thr, thr
+
+
+def calibration_summary(task: str, ref_price: float | None = None) -> dict:
+    """Range calibration for a task's champion, from chronological evidence only (walk-forward, then matured live outcomes)."""
+    champ = registry.champion(task)["version"]
+    dev = db.rows("SELECT metrics, data_through FROM dev_evals WHERE task=? AND version=? ORDER BY data_through DESC LIMIT 1", (task, champ))
+    m = json.loads(dev[0]["metrics"]) if dev else {}
+    fwd = ledger.stats(task, version=champ)
+    hist = m.get("coverage_pct")
+    out = {"target_pct": TARGET_COVERAGE_PCT, "historical_pct": hist, "historical_basis": "walk-forward: each range calibrated only on earlier data",
+           "n_dates": m.get("n_origins"), "by_period_pct": m.get("by_period_coverage_pct"), "ci90_pct": m.get("coverage_ci90_pct"),
+           "mean_width_pct": m.get("mean_width_pct"), "label": calibration_label(hist),
+           "forward_pct": fwd.get("coverage_pct"), "forward_n": fwd.get("n_matured", 0), "data_through": dev[0]["data_through"] if dev else None}
+    if ref_price and out["mean_width_pct"] is not None:
+        out["mean_width_usd"] = float(ref_price * out["mean_width_pct"] / 100)
+    return out
 
 
 def _origin_epoch(d: pd.Timestamp) -> float:
@@ -164,7 +199,11 @@ def dev_evaluate_forward(close: pd.Series, drivers_df: pd.DataFrame, data_throug
         for version, wf in runs.items():
             loss_m = np.abs(p0 * np.exp(wf["pred"][common]) - ph)
             lo, hi = wf["lo"][common], wf["hi"][common]
+            hits = ((y >= lo) & (y <= hi)).astype(float)
+            cov_lo, cov_hi = rd._block_bootstrap_ci(hits, block=max(h, 10), reps=1000)  # overlapping targets: resample blocks, not points
             results[version] = {
+                "by_period_coverage_pct": [float(hits[t].mean() * 100) for t in np.array_split(np.arange(len(hits)), 3)],
+                "coverage_ci90_pct": [float(cov_lo * 100), float(cov_hi * 100)], "horizon": h,
                 "task": task, "n_origins": int(common.sum()), "mae": float(loss_m.mean()), "baseline_mae": float(loss_b.mean()),
                 "mae_vs_baseline_pct": float((loss_m.mean() / loss_b.mean() - 1) * 100),
                 "p_value_vs_baseline": rd.boot_p_value(loss_m - loss_b, max(h, 10)),
@@ -301,12 +340,14 @@ def _store_dev(data_through: str, dev: dict[str, dict]) -> None:
             c.execute("INSERT OR REPLACE INTO dev_evals VALUES (?,?,?,?,?)", (data_through, m["task"], v, now, __import__("json").dumps(slim)))
 
 
-def run_learning(close: pd.Series, drivers_df: pd.DataFrame | None, data_key: str) -> dict:
+def run_learning(close: pd.Series, drivers_df: pd.DataFrame | None, data_key: str, force: bool = False) -> dict:
     """One full learning pass for fresh completed-session data. Failures leave the champion untouched."""
     registry.seed()
     data_through = close.index[-1].date().isoformat()
     summary: dict = {"data_through": data_through, "matured": ledger.mature(close), "errors": {}}
     summary["forward_issue"] = issue_forward(close, drivers_df, data_key)
+    if force:
+        db.connect().execute("DELETE FROM dev_evals WHERE data_through=?", (data_through,))  # dev_evals is a cache, not the ledger
     done = db.rows("SELECT 1 FROM dev_evals WHERE data_through=? LIMIT 1", (data_through,))
     if done:
         summary["development"] = "already evaluated for this data"
@@ -344,6 +385,7 @@ def status_payload() -> dict:
             "baseline_version": base_ver, "forecasts_issued": n_all,
             "forward": {**fwd, "effective_blocks": round(ledger.effective_blocks(fwd.get("n_sessions", 0), h), 1), "needed_for_verdict": MIN_FORWARD_BLOCKS},
             "development": (lambda r: {**__import__("json").loads(r[0]["metrics"]), "data_through": r[0]["data_through"]} if r else None)(dev),
+            "calibration": calibration_summary(task),
             "last_decision": ({k: last[0][k] for k in ("at", "decision", "reason", "champion_after")} if last else None),
             "challengers": [{"version": v["version"], "status": v["status"], "last_trained_at": v["last_trained_at"],
                              "forward": ledger.stats(task, version=v["version"])} for v in registry.versions(task) if v["status"] != "champion" and v["algorithm"] != "unchanged"],

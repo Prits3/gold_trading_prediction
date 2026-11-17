@@ -8,6 +8,7 @@ export function PriceSummary({ s, err }: { s: MarketSummary | null; err: string 
   const stat = (label: string, v: number | null, note?: string | null) => (
     <div className="gx-stat"><span>{label}</span><b className="mono" title={note ?? undefined}>{v != null ? num(v) : "—"}{note ? <sup>*</sup> : null}</b></div>
   );
+  const prevMissing = s.previous_close == null;
   return (
     <section className="gx-summary" aria-label="Price summary">
       <div className="gx-price-row">
@@ -21,7 +22,9 @@ export function PriceSummary({ s, err }: { s: MarketSummary | null; err: string 
       </div>
       <div className="gx-stats">
         {stat("Session open", s.session.open, s.session.open_note)}
-        {stat("Previous close", s.previous_close)}
+        {prevMissing
+          ? <div className="gx-stat" data-testid="prev-close-missing"><span>Previous close</span><b className="gx-unavail">Unavailable from provider<Info label="Previous close" text={s.previous_close_note} /></b></div>
+          : stat("Previous close", s.previous_close, null)}
         {stat("Session high", s.session.high)}
         {stat("Session low", s.session.low)}
         <Info label="Session definition" text={`${s.session.convention}${s.session.open_note ? " * " + s.session.open_note : ""}`} />

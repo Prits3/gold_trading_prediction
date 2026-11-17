@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -301,33 +302,90 @@ def _next_hour_epoch(now: float) -> float:
     return (int(now // 3600) + 1) * 3600.0
 
 
+ALGO_LABEL = {"unchanged": "Unchanged-price baseline", "ridge": "Ridge model", "hgb": "Gradient-boosting model",
+              "random_forest": "Random-forest model", "extra_trees": "Extra-trees model"}
+
+
+def _frozen(f: dict, horizon_sessions: float) -> dict:
+    """A ledger forecast exactly as it was issued. Nothing here changes when quotes move."""
+    change = f["predicted"] - f["base_price"]
+    change_pct = (f["predicted"] / f["base_price"] - 1) * 100
+    little, thr = learning.little_change(change_pct, horizon_sessions)
+    return {"forecast_id": f["id"], "predicted": round(f["predicted"], 2), "low": round(f["low"], 2), "high": round(f["high"], 2), "level": f["level"],
+            "reference_price": round(f["base_price"], 2), "change": round(change, 2), "change_pct": round(change_pct, 3),
+            "little_change": little, "little_change_threshold_pct": round(thr, 3), "issued_at": f["issued_at"], "input_cutoff": f["input_cutoff"],
+            "target_date": f["target_date"], "target_time": f["target_time"], "horizon": f["horizon"],
+            "source": {"kind": "baseline" if f["algorithm"] == "unchanged" else "model", "label": ALGO_LABEL.get(f["algorithm"], f["algorithm"]),
+                       "version": f["model_version"], "algorithm": f["algorithm"], "feature_schema": f["feature_schema"], "role": f["role"],
+                       "target_def": f["target_def"]}}
+
+
+def _result(f: dict) -> dict:
+    o = ledger.with_outcome(f["id"])
+    return {"matured": o is not None, "actual": None if o is None else round(o["actual"], 2), "abs_error": None if o is None else round(o["abs_error"], 2),
+            "in_range": None if o is None or o["in_range"] is None else bool(o["in_range"])}
+
+
+def _pending(ds) -> dict | None:
+    return ds.meta.get("pending_settlement")
+
+
 @app.get("/api/forecast/today")
 def forecast_today():
-    """Forecast of the next official futures settlement, plus the result of the one that just passed."""
+    """The next-settlement forecast exactly as issued (frozen), a separately labelled live comparison, and the previous result."""
     ds = _dataset()
     try:
         n = nowcast.get(ds.series)
-    except nowcast.NowcastUnavailable as exc:
-        raise _err(503, "no_nowcast", str(exc)) from exc
-    issued = db.rows("SELECT issued_at, model_version FROM forecasts WHERE task='nowcast' AND role='champion' AND target_date=? ORDER BY issued_at DESC LIMIT 1",
-                     (n["target_date"],))
+    except nowcast.NowcastUnavailable:
+        n = None
+    f = None
+    if n:
+        def _cur():
+            r = db.rows("SELECT * FROM forecasts WHERE task='nowcast' AND role='champion' AND target_date=? ORDER BY issued_at DESC LIMIT 1", (n["target_date"],))
+            return r[0] if r else None
+        f = _cur()
+        if f is None and n["market_open"]:
+            try:
+                worker.issue_nowcast(ds.series)  # idempotent; normally the worker has already done this
+            except Exception:  # noqa: BLE001
+                pass
+            f = _cur()
+    if f is None:  # nothing issued for the upcoming settlement yet: keep showing the last valid forecast, marked by its real state
+        r = db.rows("SELECT * FROM forecasts WHERE task='nowcast' AND role='champion' ORDER BY issued_at DESC LIMIT 1")
+        f = r[0] if r else None
+    if f is None:
+        return {"status": "none", "message": "No settlement forecast has been issued yet. One is issued each hour while the market is open."}
+    now = time.time()
+    completed = pd.Timestamp(f["target_time"]).timestamp() <= now
+    out = {"status": "completed" if completed else "current", "forecast": _frozen(f, 1.0), "result": _result(f) if completed else None,
+           "market_open": bool(n and n["market_open"]), "next_update_epoch": _next_hour_epoch(now) if n and n["market_open"] else None, "pending_settlement": _pending(ds)}
+    if n:
+        live = n["anchor_price"]
+        out["live"] = {"price": live, "as_of_epoch": n["anchor_time_epoch"], "delay_seconds": n["anchor_delay_seconds"], "label": "Latest futures quote",
+                       "vs_forecast": round(live - f["predicted"], 2), "vs_forecast_pct": round((live / f["predicted"] - 1) * 100, 3)}
+        cal = n["calibration"]
+        width = (f["high"] - f["low"]) / f["predicted"] * 100
+        out["calibration"] = {"target_pct": 80.0, "historical_pct": cal["coverage_by_session_pct"], "ci90_pct": cal["coverage_ci90_pct"], "n_dates": cal["n_sessions"],
+                              "historical_basis": "held-out sessions (not hourly rows)", "mean_width_pct": round(width, 3), "mean_width_usd": round(f["high"] - f["low"], 2),
+                              "label": learning.calibration_label(cal["coverage_by_session_pct"]), "typical_error_usd": n.get("typical_error_usd")}
+        out["next_target"] = {"target_date": n["target_date"], "target_time": n["target_time"]}
+    if completed:
+        out["message"] = ("This settlement has passed; its official figure is not posted yet." if not out["result"]["matured"] else "This settlement has passed.") + \
+                         (" The next forecast is issued while the market is open." if not (n and n["market_open"]) else "")
     prev = db.rows("SELECT f.*, o.actual, o.abs_error, o.in_range FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id=f.id "
-                   "WHERE f.task='nowcast' AND f.role='champion' AND f.target_date<? ORDER BY f.target_date DESC, f.issued_at DESC LIMIT 1", (n["target_date"],))
-    last_result = None
+                   "WHERE f.task='nowcast' AND f.role='champion' AND f.target_date<? ORDER BY f.target_date DESC, f.issued_at DESC LIMIT 1", (f["target_date"],))
     if prev:
         r = prev[0]
-        last_result = {"target_date": r["target_date"], "predicted": round(r["predicted"], 2), "low": r["low"], "high": r["high"], "issued_at": r["issued_at"],
-                       "actual": None if r["actual"] is None else round(r["actual"], 2), "abs_error": None if r["abs_error"] is None else round(r["abs_error"], 2),
-                       "in_range": None if r["in_range"] is None else bool(r["in_range"]),
-                       "status": "scored" if r["actual"] is not None else "awaiting_official_figure"}
-    now = time.time()
-    return {**n, "issued_at": issued[0]["issued_at"] if issued else None, "model_version": issued[0]["model_version"] if issued else registry.champion("nowcast")["version"],
-            "next_update_epoch": _next_hour_epoch(now) if n["market_open"] else None, "last_result": last_result,
-            "evaluation": learning.status_payload()["tasks"]["nowcast"]["forward"]}
+        out["last_result"] = {"target_date": r["target_date"], "predicted": round(r["predicted"], 2), "low": r["low"], "high": r["high"], "issued_at": r["issued_at"],
+                              "actual": None if r["actual"] is None else round(r["actual"], 2), "abs_error": None if r["abs_error"] is None else round(r["abs_error"], 2),
+                              "in_range": None if r["in_range"] is None else bool(r["in_range"]),
+                              "status": "scored" if r["actual"] is not None else "awaiting_official_figure"}
+    return out
 
 
 @app.get("/api/forecast/forward")
 def forecast_forward(horizon: int = 5):
+    """The latest valid forward forecast as issued. If its target has passed it is reported as completed, never as current."""
     h = _horizon(horizon)
     task = f"fwd_{h}"
     ds = _dataset()
@@ -335,7 +393,7 @@ def forecast_forward(horizon: int = 5):
     base_date = ds.series.index[-1].date().isoformat()
     if (f is None or f["base_time"] != base_date) and ds.key not in _issue_attempted:
         # The worker issues these after every completed session. If it has not yet, try ONCE per data version (idempotent,
-        # ledger-backed). A horizon that cannot be issued (its target already passed) must not trigger repeated heavy refits.
+        # ledger-backed). A horizon that cannot be issued must not trigger repeated heavy refits.
         with _issue_lock:
             if ds.key not in _issue_attempted:
                 _issue_attempted.add(ds.key)
@@ -347,15 +405,28 @@ def forecast_forward(horizon: int = 5):
                     learning.issue_forward(ds.series, d, ds.key)
         f = ledger.latest(task, "champion", horizon=h)
     if f is None:
-        return {"status": "pending", "horizon": h, "message": f"No valid {h}-session forecast exists yet. It is issued as soon as today's completed-session "
-                "data arrives (after 17:00 ET); a forecast is never logged after its own target time."}
-    st = learning.status_payload()["tasks"][task]
-    return {"horizon": h, "forecast_id": f["id"], "instrument": "Gold futures (GC=F)", "target_def": f["target_def"], "model_version": f["model_version"],
-            "algorithm": f["algorithm"], "feature_schema": f["feature_schema"], "issued_at": f["issued_at"], "input_cutoff": f["input_cutoff"],
-            "base_date": f["base_time"], "base_price": round(f["base_price"], 2), "target_date": f["target_date"], "target_time": f["target_time"],
-            "predicted": round(f["predicted"], 2), "change_pct": round((f["predicted"] / f["base_price"] - 1) * 100, 2),
-            "low": round(f["low"], 2), "high": round(f["high"], 2), "level": f["level"], "scope": "futures",
-            "evaluation": {"development": st["development"], "forward": st["forward"]}}
+        pend = _pending(ds)
+        nxt = ({"state": "waiting_for_provider", "message": f"The {pend['date']} session has ended, but Yahoo's free daily series has not posted its official settlement yet. "
+                "The first forecast is issued as soon as it does."} if pend else
+               {"state": "scheduled", "message": f"No {h}-session forecast has been issued yet. It is issued after the next session completes: the target must lie in the future, "
+                "and the base price must be a finished session's official settlement."})
+        return {"status": "none", "horizon": h, "message": nxt["message"], "next_forecast": nxt}
+    now = time.time()
+    completed = pd.Timestamp(f["target_time"]).timestamp() <= now
+    out = {"status": "completed" if completed else "current", "horizon": h, "forecast": _frozen(f, float(h)), "result": _result(f) if completed else None,
+           "base_date": f["base_time"], "calibration": learning.calibration_summary(task, f["base_price"]),
+           "evaluation": {"development": learning.status_payload()["tasks"][task]["development"], "forward": learning.status_payload()["tasks"][task]["forward"]}}
+    newer_session = f["base_time"] != base_date  # a completed session exists that this forecast does not know about
+    pend = _pending(ds)
+    if completed or newer_session:
+        if pend:
+            out["next_forecast"] = {"state": "waiting_for_provider", "message": (f"The {pend['date']} session has ended, but Yahoo's free daily series has not posted its official settlement "
+                                    "(its bar still shows the last trade). The next forecast is issued as soon as it does; an unfinished bar is never used as a completed observation.")}
+        elif newer_session:
+            out["next_forecast"] = {"state": "issuing", "message": "A new completed session is available; the worker is issuing the next forecast (usually within minutes)."}
+        else:
+            out["next_forecast"] = {"state": "scheduled", "message": "The next forecast is issued after the next session completes."}
+    return out
 
 
 @app.get("/api/learning")

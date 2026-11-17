@@ -2,11 +2,11 @@
 
 A clean gold price app: one chart, two forecasts, and a learning loop that keeps score of its own predictions.
 
-![Gold Outlook on desktop: price summary, 5-minute futures candles with a forecast marker, and the two forecast cards](docs/screenshots/desktop.png)
+![Price history: forecast cards above a candlestick chart of real 5-minute futures prices](docs/screenshots/desktop.png)
 
-| | |
+| Forecast view | Mobile |
 |---|---|
-| ![Forward forecast overlay on 3-month daily candles](docs/screenshots/forecast-overlay.png) | ![Mobile layout at 390px](docs/screenshots/mobile.png) |
+| ![Forecast view: history, a labelled reference point, an illustrative connection to the target and its 80% range](docs/screenshots/forecast-view.png) | ![Mobile forecast view at 390px](docs/screenshots/mobile-forecast.png) |
 
 **What it does not do:** predict gold to 99.99%, or at all reliably. Daily gold behaves close to a random walk, and the app measures and shows that instead of hiding it. Read [What the evidence says](#what-the-evidence-says).
 
@@ -36,10 +36,13 @@ Logs: `~/Library/Logs/gold-outlook/worker.log`. **A sleeping or powered-off Mac 
 
 - **Header:** instrument (Spot gold / Gold futures), connection state with the latest quote time, settings.
 - **Price summary:** latest price, session change, open, previous close, high, low, USD per troy oz. Each instrument has its own session convention (below); the two are never mixed.
-- **Chart** ([TradingView Lightweight Charts™](https://www.tradingview.com/), Apache-2.0, attribution shown): Line / Candles, 1D · 1W · 1M · 3M · 1Y · 5Y, crosshair, latest-price marker. Zoom and scroll survive live updates. No candle is ever manufactured: closures are compressed out of the axis, and recorded-spot outages appear as gaps.
-- **Today's prediction:** the next official settlement (13:30 ET), expected change against a named reference price, range, issue time and next update. After the target passes it shows predicted vs actual and the next session's forecast.
-- **Forward forecast:** 1 / 5 / 20 sessions ahead, with target date, range and issue time. A forecast is never logged after its own target time, so the 1-session card can briefly say it is pending.
-- **Model details** (drawer): current models and training times, scored forecasts, forward performance against "no change", calibration, the last promotion decision and why, history and rollback, market drivers with freshness, backtest, news archive, methodology, data sources.
+- **Gold futures forecasts** (above the chart, two compact cards). Both show the forecast *as it was issued*: predicted price, target weekday/date/time/ET, change from the forecast reference, range, issue time and a plain sentence. The reference is frozen at issue and never follows the quote; the latest quote is shown separately and labelled. A prediction equal to the issue-time price is labelled **Unchanged-price baseline**, never presented as a learned prediction. A change smaller than 0.10% × √sessions reads "Little change predicted" (a display rule, not a confidence level). A forecast whose target has passed is shown as *Completed* with its actual and error.
+- **Chart**, switchable between **Price history** and **Forecast** ([TradingView Lightweight Charts™](https://www.tradingview.com/), Apache-2.0, attribution shown). *Price history* is observations only: real OHLC candles or a 2px line with light shading, the candle/point interval stated, hover readout, one latest-price marker, ranges 1D–5Y; zoom survives live updates. *Forecast* (futures only) has an explicit Next settlement / 1 / 5 / 20 selector, recent history, a labelled reference, a dashed **Illustrative connection** (not a predicted path) and the target with its range at its real date; labels are collision-resolved and never clip. Provider and session detail sits behind the ⓘ button.
+- **Model details** (drawer): current models and training times, scored forecasts, forward performance against "no change", the range-calibration audit, the last promotion decision and why, history and rollback, market drivers, backtest, news archive, methodology, data sources.
+
+### Forecast timing, and the one genuine provider delay
+
+A forward forecast must target a *future* session from a *finished* session's official settlement, and a forecast is never logged at or after its own target time. The official daily close is the 13:30 ET COMEX settlement (measured: the finalised GC=F daily close is within $1.50 of the 5-minute close at 13:25 ET over 48 sessions). Yahoo's free daily series **does not post that settlement when it is set**: its bar for the current session tracks the live price until the session is finalised. So a daily bar is treated as a completed observation only when the session has ended (17:00 ET) **and** its close agrees with the settlement-time price within $2; otherwise it is excluded and the cards say so. Until the next forecast can be issued, the last valid one stays visible with its issue time and target, marked *Completed* once its target passes. (Earlier, Yahoo's calendar-day "trading period" kept a finished session "unfinished" until midnight; that was wrong and is fixed.)
 
 ## Data sources and their real delays
 
@@ -47,6 +50,7 @@ Logs: `~/Library/Logs/gold-outlook/worker.log`. **A sleeping or powered-off Mac 
 |---|---|---|
 | Futures price and **real OHLC** candles (all ranges) | Yahoo Finance, COMEX `GC=F` | ≈10 min delayed (free feed); chart refreshes every 15 s |
 | Spot gold price | gold-api.com, XAU/USD | seconds; recorded every 10 s by the worker |
+| Spot previous close | prices recorded at the 17:00 ET roll | **Unavailable from provider** until recorded: gold-api.com's history endpoint requires an API key, so there is no free backfill; no futures value is substituted |
 | Spot candles | ticks recorded by this app | begin when recording began. No keyless provider offers spot OHLC history |
 | Daily closes the models learn from | Yahoo Finance `GC=F` settlements | after each completed session |
 | Dollar index, 10-yr yield, S&P 500, VIX | Yahoo Finance daily | same evening |
@@ -55,7 +59,7 @@ Logs: `~/Library/Logs/gold-outlook/worker.log`. **A sleeping or powered-off Mac 
 
 Delayed data is never labelled real-time. Streaming APIs are not used because none of the free feeds offers one; the update cadence is stated on screen instead.
 
-**Session conventions.** *Futures:* 18:00 ET (previous evening) to 17:00 ET; change is measured against the previous official 13:30 ET settlement. *Spot:* FX day, 17:00 ET to 17:00 ET; open, high, low and previous close come from recorded prices, and are marked when recording started late.
+**Session conventions.** *Futures:* 18:00 ET (previous evening) to 17:00 ET; change is measured against the previous official 13:30 ET settlement. *Spot:* FX day, 17:00 ET to 17:00 ET (DST-correct); open, high, low and previous close come from recorded prices (previous close only if a price was recorded within 10 minutes of the roll), and are marked when recording started late.
 
 ## How learning works
 
@@ -79,14 +83,14 @@ collect → validate & save → features → issue forecasts → wait for outcom
 - **Forward forecasts (1/5/20 sessions).** Walk-forward errors are within about ±5% of "price unchanged" (usually worse, not better) and direction is 48–59%. No model beats the unchanged price with statistical confidence at any horizon.
 - **Do market drivers help?** (dollar, yields, real yields, S&P 500, VIX; joined by *availability time*, never by date; 589–598 identical forecast dates per horizon.) Drivers gave a statistically reliable improvement over gold-only for gradient boosting and random forest at 1 session and random forest at 20 — mostly by making over-fitting tree models lose *less* — but **nothing beat the unchanged price**, and with nine paired tests a few "significant" cells are expected by chance. A deliberately leaky same-day join scored about the same, so look-ahead is not what held the earlier experiments back. Not tested: economic-release surprises (no timestamped consensus data without a paid licence) and futures volume (continuous-contract volume is unreliable). Full tables: Model details → Market drivers.
 - **News** is archived with original and first-seen timestamps and de-duplicated, but is **not a model input**: reliable historical news is unavailable, and an LLM's memory of past headlines is not a point-in-time record. It needs months of forward data before it can be evaluated. LLM event extraction is intentionally not enabled.
-- **20-session ranges are overconfident** (they cover roughly 55–70%, not 80%); the app shows measured coverage next to the claim.
+- **Range calibration, by horizon** (chronological walk-forward; each range uses only earlier information; ranges are not tuned after the fact). Historical coverage vs the claimed 80%: **1 session 80%** (90% interval 77–83), **5 sessions 79%** (74–83), **20 sessions 70%** (62–79; by period 71 / 78 / **62**), average widths 3.5% / 8.1% / 14.4% of price. The 20-session range is shown as **Under-calibrated** (more than 8 points below target) and is weakest in the most recent period.
 
 ## Development
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q          # 104 tests
-cd frontend && npx tsc --noEmit && npm run build     # type check + production build
-cd e2e && URL=http://127.0.0.1:8742 OUT=./shots node verify.mjs   # 33 browser checks, desktop + 390px
+cd backend && .venv/bin/python -m pytest -q          # 118 tests
+cd frontend && npx tsc --noEmit && npm run build && node --test src/labels.test.mjs   # type check, build, label-collision tests
+cd e2e && URL=http://127.0.0.1:8742 OUT=./shots node verify.mjs   # 72 browser checks, desktop + 390px
 ```
 
 Layout: `backend/app/` — `market.py` (OHLC and summaries), `nowcast.py` (today's settlement), `learning.py` + `registry.py` + `ledger.py` + `db.py` (the loop), `drivers.py` + `research_drivers.py` (inputs and the controlled comparison), `worker.py` (daemon and CLI), `news_store.py`; `frontend/src/` — the single-screen UI; `scripts/launchd/` — background-worker install, uninstall, status.

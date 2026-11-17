@@ -175,26 +175,51 @@ def futures_summary(daily: pd.Series) -> dict:
                         "low": round(float(cur["l"].min()), 2), "starts": "18:00 ET previous evening",
                         "convention": "Session runs 18:00 ET (previous evening) to 17:00 ET. Change is measured against the previous official 13:30 ET settlement."},
             "previous_close": round(prev_close, 2) if prev_close is not None else None,
+            "previous_close_status": "recorded" if prev_close is not None else "unavailable_from_provider",
+            "previous_close_note": "Official 13:30 ET settlement of the previous completed session." if prev_close is not None else "Unavailable from provider.",
             "previous_close_date": prev.index[-1].date().isoformat() if len(prev) else None,
             "change": round(price - prev_close, 2) if prev_close is not None else None,
             "change_pct": round((price / prev_close - 1) * 100, 3) if prev_close else None,
             "update_every_seconds": 15, "provider": "Yahoo Finance (free feed, ~10 min delayed)"}
 
 
+ROLL_TOLERANCE_S = 10 * 60  # a recorded tick must be this close to the 17:00 ET roll to count as the session boundary price
+
+
+def et_1700(day) -> pd.Timestamp:
+    """17:00 New York wall-clock time on ``day`` (DST-correct: built from wall-clock fields, never by adding 17h to midnight)."""
+    return pd.Timestamp(year=day.year, month=day.month, day=day.day, hour=17, tz=NY)
+
+
+def spot_session_start(now_et: pd.Timestamp) -> pd.Timestamp:
+    """Start of the current FX-style spot session: the most recent 17:00 ET (there is no Saturday-17:00 start; weekends roll back to Friday)."""
+    day = now_et.date()
+    start = et_1700(day)
+    if now_et < start:
+        start = et_1700(day - pd.Timedelta(days=1))
+    while start.dayofweek == 5:
+        start = et_1700(start.date() - pd.Timedelta(days=1))
+    return start
+
+
+def spot_boundary_reference(start: pd.Timestamp) -> pd.Timestamp:
+    """The moment whose last price is 'the previous close' for a session starting at ``start``.
+
+    Normally the same 17:00 ET roll; the Sunday-evening open has no roll of its own, so its previous close is Friday 17:00 ET."""
+    return et_1700(start.date() - pd.Timedelta(days=2)) if start.dayofweek == 6 else start
+
+
 def spot_summary() -> dict:
     now = time.time()
     now_et = pd.Timestamp(now, unit="s", tz="UTC").tz_convert(NY)
-    start = now_et.normalize() + pd.Timedelta(hours=17)
-    if now_et < start:
-        start -= pd.Timedelta(days=1)
-    while start.dayofweek == 5:  # an FX day never starts on a Saturday
-        start -= pd.Timedelta(days=1)
+    start = spot_session_start(now_et)
     s0 = start.timestamp()
+    ref = spot_boundary_reference(start).timestamp()
     last = db.rows("SELECT ts, price FROM spot_ticks ORDER BY ts DESC LIMIT 1")
     if not last:
         raise MarketUnavailable("No spot ticks recorded yet.")
     in_sess = db.rows("SELECT ts, price FROM spot_ticks WHERE ts>=? ORDER BY ts", (s0,))
-    before = db.rows("SELECT ts, price FROM spot_ticks WHERE ts<? AND ts>=? ORDER BY ts DESC LIMIT 1", (s0, s0 - 3 * 86400))
+    before = db.rows("SELECT ts, price FROM spot_ticks WHERE ts<=? AND ts>=? ORDER BY ts DESC LIMIT 1", (ref, ref - ROLL_TOLERANCE_S))
     price, tick = last[0]["price"], last[0]["ts"]
     prices = [r["price"] for r in in_sess] or [price]
     prev = before[0]["price"] if before else None
@@ -206,8 +231,12 @@ def spot_summary() -> dict:
             "session": {"date": (start + pd.Timedelta(days=1)).date().isoformat(), "open": round(open_, 2) if open_ is not None else None,
                         "high": round(max(prices), 2), "low": round(min(prices), 2), "starts": "17:00 ET",
                         "open_note": "First price recorded after the session began (recording started late)." if open_late else None,
-                        "convention": "FX-style day: 17:00 ET to 17:00 ET. Open, high and low come from prices this app recorded; change is against the last price recorded before 17:00 ET."},
-            "previous_close": round(prev, 2) if prev is not None else None, "previous_close_date": None,
+                        "convention": "FX-style day: 17:00 ET to 17:00 ET (daylight saving handled). Open, high and low come from prices this app recorded; change is against the last price recorded at the 17:00 ET roll."},
+            "previous_close": round(prev, 2) if prev is not None else None,
+            "previous_close_status": "recorded" if prev is not None else "unavailable_from_provider",
+            "previous_close_note": (f"Last price recorded at the 17:00 ET roll ({pd.Timestamp(before[0]['ts'], unit='s', tz='UTC').tz_convert(NY).strftime('%a %H:%M:%S')} ET)" if prev is not None
+                                    else "Unavailable from provider: gold-api.com's history requires an API key, so there is no free backfill. It appears once this app has recorded a price at a 17:00 ET roll."),
+            "previous_close_date": None,
             "change": round(price - prev, 2) if prev is not None else None,
             "change_pct": round((price / prev - 1) * 100, 3) if prev else None,
             "update_every_seconds": 10, "provider": "gold-api.com (real-time spot, recorded every 10 s)"}

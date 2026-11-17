@@ -100,36 +100,17 @@ export interface MarketStatus { state: "live" | "delayed" | "stale" | "closed" |
 export interface MarketSummary {
   instrument: InstrumentKey; name: string; currency: string; unit: string; price: number; as_of_epoch: number | null; delay_seconds: number | null; status: MarketStatus;
   session: { date: string; open: number | null; high: number; low: number; starts: string; convention: string; open_note?: string | null };
-  previous_close: number | null; previous_close_date: string | null; change: number | null; change_pct: number | null; update_every_seconds: number; provider: string;
+  previous_close: number | null; previous_close_status: "recorded" | "unavailable_from_provider"; previous_close_note: string; previous_close_date: string | null; change: number | null; change_pct: number | null; update_every_seconds: number; provider: string;
 }
 
-export interface TodayForecast {
-  status: "open" | "closed"; phase: "pre_settlement" | "next_session"; instrument: string; target_date: string; target_time: string; timezone: string; target_label: string;
-  anchor_price: number; anchor_time: string; anchor_time_epoch: number; anchor_delay_seconds: number; predicted_close: number; low: number; high: number; level: number;
-  expected_move_pct: number; method: string; hours_left: number; minutes_to_target: number; market_open: boolean; message: string; typical_error_usd: number | null;
-  reference: { kind: "previous_settlement" | "live_price"; label: string; price: number };
-  last_official_close: { date: string; close: number };
-  issued_at: number | null; model_version: string; next_update_epoch: number | null;
-  calibration: { coverage_pct: number; n_rows: number; n_sessions: number; coverage_by_session_pct: number; coverage_ci90_pct: [number, number]; period: { start: string; end: string } };
-  last_result: null | { target_date: string; predicted: number; low: number | null; high: number | null; issued_at: number; actual: number | null; abs_error: number | null; in_range: boolean | null; status: "scored" | "awaiting_official_figure" };
-  evaluation: ForwardStats;
-}
 export interface ForwardStats {
   n_matured: number; n_sessions: number; mae?: number; baseline_mae?: number; mae_vs_baseline_pct?: number | null; coverage_pct?: number | null;
   effective_blocks?: number; needed_for_verdict?: number; mae_diff_ci90_pct?: [number, number];
 }
-export interface DevMetrics { n_origins: number; mae: number; baseline_mae: number; mae_vs_baseline_pct: number; direction_pct: number; coverage_pct: number | null; mean_width_pct: number | null; p_value_vs_baseline: number; by_period_vs_baseline_pct: number[]; data_through: string }
-export interface ForwardForecast {
-  horizon: Horizon; forecast_id: string; instrument: string; target_def: string; model_version: string; algorithm: string; feature_schema: string; issued_at: number; input_cutoff: number;
-  base_date: string; base_price: number; target_date: string; target_time: string; predicted: number; change_pct: number; low: number; high: number; level: number; scope: "futures";
-  evaluation: { development: DevMetrics | null; forward: ForwardStats };
-}
-
-export interface ForwardPending { status: "pending"; horizon: Horizon; message: string }
-
+export interface DevMetrics { by_period_coverage_pct?: number[]; coverage_ci90_pct?: [number, number]; n_origins: number; mae: number; baseline_mae: number; mae_vs_baseline_pct: number; direction_pct: number; coverage_pct: number | null; mean_width_pct: number | null; p_value_vs_baseline: number; by_period_vs_baseline_pct: number[]; data_through: string }
 export interface TaskStatus {
   champion: { version: string; algorithm: string; feature_schema: string; status_changed_at: number; last_trained_at: number | null; trained_through: string | null };
-  baseline_version: string; forecasts_issued: number; forward: ForwardStats; development: DevMetrics | null;
+  baseline_version: string; forecasts_issued: number; forward: ForwardStats; development: DevMetrics | null; calibration?: CalibrationInfo;
   last_decision: { at: number; decision: string; reason: string; champion_after: string } | null;
   challengers: { version: string; status: string; last_trained_at: number | null; forward: ForwardStats }[];
 }
@@ -182,4 +163,34 @@ export interface GldComparison {
     indexed: { date: string; gc: number; gld: number }[];
     window: { sessions: number; start: string; end: string; return_correlation: number; gc_return_pct: number; gld_return_pct: number };
   };
+}
+
+export interface ForecastSource {
+  kind: "baseline" | "model"; label: string; version: string; algorithm: string; feature_schema: string; role: string; target_def: string;
+}
+/** A forecast exactly as it was issued. Nothing in it changes when quotes move. */
+export interface FrozenForecast {
+  forecast_id: string; predicted: number; low: number; high: number; level: number; reference_price: number; change: number; change_pct: number;
+  little_change: boolean; little_change_threshold_pct: number; issued_at: number; input_cutoff: number; target_date: string; target_time: string;
+  horizon: number | null; source: ForecastSource;
+}
+export interface CalibrationInfo {
+  target_pct: number; historical_pct: number | null; ci90_pct?: [number, number] | null; n_dates?: number | null; by_period_pct?: number[] | null;
+  historical_basis?: string; mean_width_pct?: number | null; mean_width_usd?: number; label: string | null; forward_pct?: number | null; forward_n?: number;
+  typical_error_usd?: number | null;
+}
+export interface ForecastResult { matured: boolean; actual: number | null; abs_error: number | null; in_range: boolean | null }
+export interface NextForecastInfo { state: "waiting_for_provider" | "issuing" | "scheduled"; message: string }
+export interface PendingSettlement { date: string; reason: string; close_seen?: number; settlement_price?: number }
+export interface TodayPayload {
+  status: "current" | "completed" | "none"; message?: string; forecast?: FrozenForecast; result?: ForecastResult | null; market_open?: boolean;
+  next_update_epoch?: number | null; pending_settlement?: PendingSettlement | null; calibration?: CalibrationInfo;
+  live?: { price: number; as_of_epoch: number; delay_seconds: number; label: string; vs_forecast: number; vs_forecast_pct: number };
+  next_target?: { target_date: string; target_time: string };
+  last_result?: { target_date: string; predicted: number; actual: number | null; abs_error: number | null; in_range: boolean | null; status: "scored" | "awaiting_official_figure" };
+}
+export interface ForwardPayload {
+  status: "current" | "completed" | "none"; horizon: Horizon; message?: string; forecast?: FrozenForecast; result?: ForecastResult | null; base_date?: string;
+  calibration?: CalibrationInfo; next_forecast?: NextForecastInfo;
+  evaluation?: { development: DevMetrics | null; forward: ForwardStats };
 }

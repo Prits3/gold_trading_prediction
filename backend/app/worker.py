@@ -36,6 +36,7 @@ log = logging.getLogger("gold.worker")
 SPOT_EVERY = 10
 CYCLE_UTC = (23, 30)           # daily full cycle (after the 17:00 ET close and the daily bar completes)
 SCORE_EVERY = 30 * 60          # look for newly matured outcomes this often
+LEARN_CHECK_EVERY = 5 * 60     # check whether a newly completed session needs forecasts (cheap; the data is cached)
 OVERDUE_AFTER = 26 * 3600
 
 
@@ -140,13 +141,13 @@ def job_nowcast() -> dict:
     return issue_nowcast(_store.get().series)
 
 
-def job_learn() -> dict:
+def job_learn(force: bool = False) -> dict:
     ds = _store.get()
     try:
         d = drivers.load()
     except drivers.DriversUnavailable:
         d = None
-    return learning.run_learning(ds.series, d, ds.key)
+    return learning.run_learning(ds.series, d, ds.key, force=force)
 
 
 def full_cycle() -> dict:
@@ -192,7 +193,7 @@ def run_loop(stop: threading.Event | None = None, once_overdue: bool = True) -> 
         if not got:
             return False
         log.info("worker started (pid %s)", os.getpid())
-        last_spot = last_score = last_hb = 0.0
+        last_spot = last_score = last_hb = last_learn = 0.0
         last_hour = -1
         last_cycle_day = None
         if once_overdue and cycle_overdue():
@@ -211,7 +212,9 @@ def run_loop(stop: threading.Event | None = None, once_overdue: bool = True) -> 
             if now - last_score >= SCORE_EVERY:
                 run_job("score", job_score)
                 last_score = now
-                try:  # fresh completed-session data -> bounded retraining/evaluation now, not at the next daily cycle
+            if now - last_learn >= LEARN_CHECK_EVERY:
+                last_learn = now
+                try:  # fresh completed-session data -> issue the new forecasts promptly (the heavy evaluation runs once per data version)
                     if needs_learning(_store.get().series):
                         run_job("learn", job_learn)
                 except Exception as exc:  # noqa: BLE001
@@ -253,6 +256,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run")
     sub.add_parser("once")
+    sub.add_parser("learn").add_argument("--force", action="store_true", help="re-run the development evaluation for the current data")
     sub.add_parser("status").add_argument("--json", action="store_true")
     rb = sub.add_parser("rollback")
     rb.add_argument("task", choices=registry.TASKS)
@@ -261,6 +265,9 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if a.cmd == "run":
         return 0 if run_loop() else (print("another worker already holds the lock; exiting") or 0)
+    if a.cmd == "learn":
+        print(json.dumps(run_job("learn", job_learn, a.force), indent=1, default=str))
+        return 0
     if a.cmd == "once":
         print(json.dumps(full_cycle(), indent=1, default=str))
         return 0
