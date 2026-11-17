@@ -39,3 +39,11 @@ export function niceAxis(lo: number, hi: number, target = 5) {
   for (let v = min; v <= max + step / 1000; v += step) ticks.push(Math.round(v * 100) / 100);
   return { domain: [min, max] as [number, number], ticks };
 }
+
+const ET = "America/New_York";
+export const fmtEt = (epochSec: number, opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) =>
+  new Intl.DateTimeFormat("en-GB", { timeZone: ET, ...opts }).format(new Date(epochSec * 1000));
+export const fmtEtDay = (epochSec: number) => fmtEt(epochSec, { weekday: "short", day: "numeric", month: "short" });
+export const fmtEtShort = (epochSec: number) => fmtEt(epochSec, { hour: "2-digit", minute: "2-digit", hour12: false });
+export const fmtIsoEt = (iso: string, opts: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-GB", { timeZone: ET, ...opts }).format(new Date(iso));
+export const fmtAgo = (sec: number | null | undefined) => (sec == null ? "—" : sec < 90 ? `${Math.round(sec)}s ago` : sec < 5400 ? `${Math.round(sec / 60)} min ago` : sec < 172800 ? `${Math.round(sec / 3600)} h ago` : `${Math.round(sec / 86400)} d ago`);

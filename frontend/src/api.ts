@@ -1,4 +1,4 @@
-import type { GldComparison, Horizon, NewsPayload, Prediction, PricePayload } from "./types";
+import type { DriversPanel, ForwardForecast, ForwardPending, GldComparison, Horizon, InstrumentKey, LearningPayload, MarketSummary, NewsPayload, OhlcPayload, Prediction, PricePayload, RangeKey, TodayForecast } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -38,6 +38,12 @@ export const api = {
     return request<PricePayload>("/api/prices/upload", { method: "POST", body });
   },
   predict: (h: Horizon) => request<Prediction>(`/api/predict?horizon=${h}`),
+  summary: (i: InstrumentKey) => request<MarketSummary>(`/api/market/summary?instrument=${i}`),
+  ohlc: (i: InstrumentKey, r: RangeKey, since?: number) => request<OhlcPayload>(`/api/market/ohlc?instrument=${i}&range=${r}${since ? `&since=${since}` : ""}`),
+  today: () => request<TodayForecast>("/api/forecast/today"),
+  forward: (h: Horizon) => request<ForwardForecast | ForwardPending>(`/api/forecast/forward?horizon=${h}`),
+  learning: () => request<LearningPayload>("/api/learning"),
+  drivers: () => request<DriversPanel>("/api/drivers"),
   gld: (refresh = false) => request<GldComparison>(`/api/compare/gld${refresh ? "?refresh=true" : ""}`),
   news: (refresh = false) => request<NewsPayload>(`/api/news${refresh ? "?refresh=true" : ""}`),
   downloadUrl: (h: Horizon, key: string) => `/api/predict/download?horizon=${h}&key=${encodeURIComponent(key)}`,

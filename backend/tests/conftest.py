@@ -1,5 +1,8 @@
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("GOLD_EMBEDDED_WORKER", "0")  # the web app must not start background jobs inside tests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

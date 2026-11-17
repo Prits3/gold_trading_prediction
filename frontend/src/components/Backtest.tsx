@@ -95,7 +95,7 @@ export function Backtest({ result, horizon }: { result: Prediction | null; horiz
       <dl className="spans" data-testid="spans">
         <div><dt>Train</dt><dd className="mono">{fmtDate(sp.train.start)} → {fmtDate(sp.train.end)} <span className="muted">n={sp.train.n}</span></dd></div>
         <div><dt>Validation <span className="muted">(model choice, range calibration)</span></dt><dd className="mono">{fmtDate(sp.validation.start)} → {fmtDate(sp.validation.end)} <span className="muted">n={sp.validation.n}</span></dd></div>
-        <div><dt>Test <span className="muted">(untouched)</span></dt><dd className="mono">{fmtDate(sp.test.start)} → {fmtDate(sp.test.end)} <span className="muted">n={sp.test.n}</span></dd></div>
+        <div><dt>Test <span className="muted">(held out when fitted; re-run on every data refresh, so development evidence)</span></dt><dd className="mono">{fmtDate(sp.test.start)} → {fmtDate(sp.test.end)} <span className="muted">n={sp.test.n}</span></dd></div>
       </dl>
       <p className="micro">
         {t.verdict}. The {t.n} test outcomes overlap in time, so only about {t.effective_n.toFixed(0)} are independent; small differences between models are within noise.

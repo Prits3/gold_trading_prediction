@@ -1,9 +1,13 @@
 """FastAPI application: prices, forecasts, news, CSV upload and forecast export."""
 from __future__ import annotations
 
+import asyncio  # noqa: F401
 import csv
 import io
+import os
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,19 +17,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from . import alpaca, config
+from . import alpaca, config, db, drivers, ledger, learning, market, news_store, nowcast, quote, registry, research_drivers, worker
 from .data import DataStore, DataUnavailable, Dataset, ValidationError
 from .model import ModelError, run_prediction
 from .news import NewsService
-
-app = FastAPI(title="Gold Outlook API", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 store = DataStore()
 news_service = NewsService()
 gld_store = alpaca.GldStore()
 _forecast_cache: dict[str, dict] = {}
+_issue_attempted: set[str] = set()
+_issue_lock = threading.Lock()
 _forecast_lock = threading.Lock()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start an in-process worker ONLY if no standalone worker (e.g. launchd) holds the daemon lock. The jobs themselves do not
+    depend on this web process: ``python -m app.worker run`` runs them with no browser or server open."""
+    stop = threading.Event()
+    thread = None
+    if not config.OFFLINE and os.environ.get("GOLD_EMBEDDED_WORKER", "1") != "0":
+        thread = threading.Thread(target=worker.run_loop, args=(stop,), name="embedded-worker", daemon=True)
+        thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
+app = FastAPI(title="Gold Outlook API", version="0.2.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 def _err(status: int, code: str, message: str) -> HTTPException:
@@ -236,6 +258,115 @@ def compare_gld(refresh: bool = False):
         "gold_source": ds.meta.get("source"),
         "comparison": comparison,
     }
+
+
+@app.get("/api/nowcast")
+def get_nowcast():
+    """Forecast of today's official close (13:30 ET settlement) from the live futures price."""
+    ds = _dataset()
+    try:
+        return nowcast.get(ds.series)
+    except nowcast.NowcastUnavailable as exc:
+        raise _err(503, "no_nowcast", str(exc)) from exc
+
+
+# ----------------------------------------------------------------------------- #
+# Chart data, price summary and the two forecast cards
+# ----------------------------------------------------------------------------- #
+def _instrument(v: str) -> str:
+    if v not in ("spot", "futures"):
+        raise _err(422, "bad_instrument", "instrument must be 'spot' or 'futures'.")
+    return v
+
+
+@app.get("/api/market/summary")
+def market_summary(instrument: str = "futures"):
+    try:
+        return market.futures_summary(_dataset().series) if _instrument(instrument) == "futures" else market.spot_summary()
+    except market.MarketUnavailable as exc:
+        raise _err(503, "no_market_data", str(exc)) from exc
+
+
+@app.get("/api/market/ohlc")
+def market_ohlc(instrument: str = "futures", range: str = "1D", since: float | None = None):
+    try:
+        return market.ohlc(_instrument(instrument), range, since)
+    except ValueError as exc:
+        raise _err(422, "bad_range", str(exc)) from exc
+    except market.MarketUnavailable as exc:
+        raise _err(503, "no_market_data", str(exc)) from exc
+
+
+def _next_hour_epoch(now: float) -> float:
+    return (int(now // 3600) + 1) * 3600.0
+
+
+@app.get("/api/forecast/today")
+def forecast_today():
+    """Forecast of the next official futures settlement, plus the result of the one that just passed."""
+    ds = _dataset()
+    try:
+        n = nowcast.get(ds.series)
+    except nowcast.NowcastUnavailable as exc:
+        raise _err(503, "no_nowcast", str(exc)) from exc
+    issued = db.rows("SELECT issued_at, model_version FROM forecasts WHERE task='nowcast' AND role='champion' AND target_date=? ORDER BY issued_at DESC LIMIT 1",
+                     (n["target_date"],))
+    prev = db.rows("SELECT f.*, o.actual, o.abs_error, o.in_range FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id=f.id "
+                   "WHERE f.task='nowcast' AND f.role='champion' AND f.target_date<? ORDER BY f.target_date DESC, f.issued_at DESC LIMIT 1", (n["target_date"],))
+    last_result = None
+    if prev:
+        r = prev[0]
+        last_result = {"target_date": r["target_date"], "predicted": round(r["predicted"], 2), "low": r["low"], "high": r["high"], "issued_at": r["issued_at"],
+                       "actual": None if r["actual"] is None else round(r["actual"], 2), "abs_error": None if r["abs_error"] is None else round(r["abs_error"], 2),
+                       "in_range": None if r["in_range"] is None else bool(r["in_range"]),
+                       "status": "scored" if r["actual"] is not None else "awaiting_official_figure"}
+    now = time.time()
+    return {**n, "issued_at": issued[0]["issued_at"] if issued else None, "model_version": issued[0]["model_version"] if issued else registry.champion("nowcast")["version"],
+            "next_update_epoch": _next_hour_epoch(now) if n["market_open"] else None, "last_result": last_result,
+            "evaluation": learning.status_payload()["tasks"]["nowcast"]["forward"]}
+
+
+@app.get("/api/forecast/forward")
+def forecast_forward(horizon: int = 5):
+    h = _horizon(horizon)
+    task = f"fwd_{h}"
+    ds = _dataset()
+    f = ledger.latest(task, "champion", horizon=h)
+    base_date = ds.series.index[-1].date().isoformat()
+    if (f is None or f["base_time"] != base_date) and ds.key not in _issue_attempted:
+        # The worker issues these after every completed session. If it has not yet, try ONCE per data version (idempotent,
+        # ledger-backed). A horizon that cannot be issued (its target already passed) must not trigger repeated heavy refits.
+        with _issue_lock:
+            if ds.key not in _issue_attempted:
+                _issue_attempted.add(ds.key)
+                try:
+                    d = drivers.load()
+                except drivers.DriversUnavailable:
+                    d = None
+                if d is not None:
+                    learning.issue_forward(ds.series, d, ds.key)
+        f = ledger.latest(task, "champion", horizon=h)
+    if f is None:
+        return {"status": "pending", "horizon": h, "message": f"No valid {h}-session forecast exists yet. It is issued as soon as today's completed-session "
+                "data arrives (after 17:00 ET); a forecast is never logged after its own target time."}
+    st = learning.status_payload()["tasks"][task]
+    return {"horizon": h, "forecast_id": f["id"], "instrument": "Gold futures (GC=F)", "target_def": f["target_def"], "model_version": f["model_version"],
+            "algorithm": f["algorithm"], "feature_schema": f["feature_schema"], "issued_at": f["issued_at"], "input_cutoff": f["input_cutoff"],
+            "base_date": f["base_time"], "base_price": round(f["base_price"], 2), "target_date": f["target_date"], "target_time": f["target_time"],
+            "predicted": round(f["predicted"], 2), "change_pct": round((f["predicted"] / f["base_price"] - 1) * 100, 2),
+            "low": round(f["low"], 2), "high": round(f["high"], 2), "level": f["level"], "scope": "futures",
+            "evaluation": {"development": st["development"], "forward": st["forward"]}}
+
+
+@app.get("/api/learning")
+def learning_status():
+    return {**learning.status_payload(), "worker": worker.status(), "news": news_store.summary(),
+            "drivers_research": research_drivers.latest()}
+
+
+@app.get("/api/drivers")
+def drivers_panel():
+    return drivers.panel()
 
 
 @app.get("/api/news")

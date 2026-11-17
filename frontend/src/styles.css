@@ -237,3 +237,74 @@ table.data th.num, table.data td.num { text-align: right; white-space: nowrap; }
 .setup { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; display: grid; gap: 10px; max-width: 720px; }
 .setup ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 13px; color: #C9D0D9; }
 .row-left { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+
+/* ---------- live buy/sell ticker ---------- */
+.ticker { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px 12px; margin-bottom: 14px; }
+.ticker-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.ticker-title { font: 600 11px var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.ticker-updated { font-size: 11px; color: var(--muted); margin-left: auto; }
+.live-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.live-dot.on { background: var(--up); box-shadow: 0 0 0 0 rgba(79,167,123,.7); animation: pulse 1.8s infinite; }
+.live-dot.off { background: var(--muted); }
+.live-dot.lag { background: var(--warn); box-shadow: 0 0 0 0 rgba(214,184,120,.6); animation: pulseLag 2.2s infinite; }
+@keyframes pulseLag { 0% { box-shadow: 0 0 0 0 rgba(214,184,120,.5); } 70% { box-shadow: 0 0 0 7px rgba(214,184,120,0); } 100% { box-shadow: 0 0 0 0 rgba(214,184,120,0); } }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(79,167,123,.6); } 70% { box-shadow: 0 0 0 7px rgba(79,167,123,0); } 100% { box-shadow: 0 0 0 0 rgba(79,167,123,0); } }
+
+.ticker-quotes { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: stretch; margin: 12px 0 10px; }
+.quote-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 14px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); cursor: default; background: var(--surface-2); }
+.quote-card.sell { border-color: rgba(210,104,95,.5); background: rgba(210,104,95,.08); }
+.quote-card.buy { border-color: rgba(79,167,123,.5); background: rgba(79,167,123,.08); }
+.quote-label { font: 700 11px var(--sans); letter-spacing: .14em; }
+.quote-card.sell .quote-label { color: var(--down); }
+.quote-card.buy .quote-label { color: var(--up); }
+.quote-price { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quote-card.sell .quote-price { color: var(--down); }
+.quote-card.buy .quote-price { color: var(--up); }
+.quote-mid { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 120px; padding: 0 6px; }
+.quote-last { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quote-chg { font-size: 12px; }
+.quote-spread { font-size: 10px; color: var(--muted); letter-spacing: .03em; text-transform: uppercase; }
+
+.flash-up { animation: flashUp .7s ease-out; }
+.flash-down { animation: flashDown .7s ease-out; }
+@keyframes flashUp { 0% { background: rgba(79,167,123,.35); } 100% { background: transparent; } }
+@keyframes flashDown { 0% { background: rgba(210,104,95,.35); } 100% { background: transparent; } }
+
+.ticker-foot { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 9px; }
+.ticker-foot .muted { opacity: .85; }
+@media (max-width: 560px) { .quote-price { font-size: 24px; } .quote-mid { min-width: 0; } }
+
+/* live-anchored forecast row inside the ticker */
+.live-forecast { display: flex; align-items: baseline; gap: 10px 16px; flex-wrap: wrap; border-top: 1px dashed var(--border); padding: 9px 0 2px; margin-top: 2px; }
+.lf-label { font: 600 11px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--gold); display: inline-flex; align-items: center; gap: 6px; }
+.lf-body { font-size: 15px; }
+.lf-body b { font-size: 17px; }
+.lf-range { font-size: 12px; }
+
+/* ---------- today's close forecast ---------- */
+.today { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: var(--radius); padding: 14px 18px 12px; margin-bottom: 14px; }
+.today-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.today-body { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 28px; flex-wrap: wrap; margin: 10px 0; }
+.today-main { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.today-price { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.today-move { font-size: 12px; }
+.today-range { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+.today-range b { font-size: 18px; color: var(--text); font-weight: 600; }
+.today-msg { margin: 10px 0; }
+
+/* ---------- model lab ---------- */
+.lab { display: flex; flex-direction: column; gap: 18px; }
+.lab-intro p { margin: 0 0 10px; color: var(--muted); max-width: 78ch; }
+.lab-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.lab-task { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; background: var(--surface-2); }
+.lab-task-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.lab-task h4, .lab-history h4 { margin: 0; font: 600 13px var(--sans); }
+.lab-badge { font: 600 11px var(--mono); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); }
+.lab-badge.win { color: var(--up); border-color: rgba(79,167,123,.5); }
+.lab-badge.hold { color: var(--muted); }
+.lab-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+.lab-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 5px 8px 5px 0; border-bottom: 1px solid var(--border); }
+.lab-table td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--grid); }
+.lab-table tr.cand td:first-child { color: var(--gold); }
+.lab-history ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 560px) { .today-price { font-size: 28px; } .lab-table { font-size: 11px; } }

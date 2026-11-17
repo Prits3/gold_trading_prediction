@@ -6,6 +6,29 @@ export function Methodology({ prices, result }: { prices: PricePayload; result: 
   return (
     <div className="method" data-testid="methodology">
       <section>
+        <h3>How this works, in plain English</h3>
+        <p>
+          A price forecast like this does one simple thing: it looks at how gold has behaved recently —
+          its last few daily moves, whether it has been trending up or down, and how jumpy it has been —
+          and asks <em>“the last time the market looked like this, what usually happened next?”</em>
+          It learns that pattern from years of real history, then applies it to today to estimate where
+          the price may sit a few sessions from now. It is a weather forecast for price, not a crystal ball.
+        </p>
+        <p>
+          We do three honest things most hobby predictors skip. (1) We hold the most recent stretch of history
+          back while the model learns, then score it on that stretch. Because that stretch is re-used as data grows, treat it as a guide;
+          the real test is the live forecast record. (2) We always compare against a dumb baseline
+          (“assume tomorrow’s price equals today’s”); if the model can’t beat that, we say so plainly.
+          (3) We show a <em>range</em>, not just a single number, because the future is uncertain and a single
+          figure would pretend otherwise.
+        </p>
+        <p>
+          <strong>Always current:</strong> the app pulls the latest gold close every time you open it, and a
+          background job refreshes the data automatically once a day after the market settles, so the forecast
+          keeps moving with the market without anyone pressing a button.
+        </p>
+      </section>
+      <section>
         <h3>Data</h3>
         <p>{prices.instrument.name}, {prices.instrument.unit}. Source: {prices.source}. {prices.count.toLocaleString()} daily closes, {fmtDate(prices.first_date)} → {fmtDate(prices.latest.date)}. This is a futures series, not spot gold; contract rolls can add small jumps.</p>
         <p>Bars are dated in the exchange time zone (America/New_York) with daylight saving handled per timestamp. The unfinished session is excluded, so the latest value is always a completed close. Provider data is cached for 15 minutes; a failed refresh keeps the last valid data and shows its age. An uploaded CSV stays active until you switch back to live data.</p>
@@ -25,7 +48,7 @@ export function Methodology({ prices, result }: { prices: PricePayload; result: 
       </section>
       <section>
         <h3>Uncertainty</h3>
-        <p>The target range uses the 10th and 90th percentiles of the selected model's validation errors, expressed in units of recent volatility (20-session daily volatility × √horizon) and rescaled at the forecast origin. It is calibrated on the validation period and its coverage is measured on the untouched test period; both are reported. It is nominally an 80% range.</p>
+        <p>The target range uses the 10th and 90th percentiles of the selected model's validation errors, expressed in units of recent volatility (60-session daily volatility × √horizon) and rescaled at the forecast origin. It is calibrated on the validation period and its coverage is measured on a held-out test period; both are reported. That test period is re-examined whenever the data refreshes, so it is development evidence rather than proof; the only out-of-sample proof is the forward record of forecasts logged before their outcomes existed (Model details → Model). It is nominally an 80% range.</p>
       </section>
     </div>
   );
