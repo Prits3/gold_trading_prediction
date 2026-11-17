@@ -13,12 +13,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import alpaca, config, db, drivers, ledger, learning, market, news_store, nowcast, quote, registry, research_drivers, worker
+from . import alerts, alpaca, config, n8n_link, threshold_research, db, drivers, ledger, learning, market, news_store, nowcast, quote, registry, research_drivers, worker
 from .data import DataStore, DataUnavailable, Dataset, ValidationError
 from .model import ModelError, run_prediction
 from .news import NewsService
@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Gold Outlook API", version="0.2.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST", "PUT"], allow_headers=["*"])
 
 
 def _err(status: int, code: str, message: str) -> HTTPException:
@@ -443,6 +443,54 @@ def drivers_panel():
 @app.get("/api/news")
 def get_news(refresh: bool = False):
     return news_service.get(force=refresh)
+
+
+# --------------------------------------------------------------------------------------------------------------- alerts
+@app.get("/api/alerts")
+def alerts_panel():
+    """Settings, last forecast check, last alert and its delivery status, and whether a touch probability may be shown."""
+    return {**alerts.panel(), "touch": threshold_research.panel()}
+
+
+@app.put("/api/alerts/settings")
+def alerts_settings(patch: dict = Body(...)):
+    try:
+        alerts.save_settings(patch)
+    except alerts.SettingsError as exc:
+        raise _err(400, "bad_settings", str(exc)) from exc
+    try:  # the schedule, levels and morning text live in n8n: push the change now (also works in simulate mode: it is just logged)
+        n8n_link.push_snapshot(force=True)
+    except Exception as exc:  # noqa: BLE001
+        alerts.log("handoff", "error", exc.__class__.__name__)
+    return {**alerts.panel(), "touch": threshold_research.panel()}
+
+
+@app.get("/api/alerts/basis")
+def alerts_basis():
+    """What the review levels apply to: instrument, currency, unit and quote basis, with live quotes and any warnings about the entry price."""
+    return alerts.verify_basis()
+
+
+@app.post("/api/alerts/check")
+def alerts_check_now():
+    return worker.run_job("alerts", worker.job_alerts)
+
+
+@app.get("/api/alerts/morning-preview")
+def alerts_morning_preview():
+    """What the morning SMS would say if it were sent right now (stale or unavailable forecasts are said to be so)."""
+    snap = n8n_link.build_snapshot(fetch_quote=False)
+    return {"schedule": snap["schedule"], **n8n_link.decide_morning(snap, time.time()), "status": snap["morning"]["status"], "valid_until": snap["morning"]["valid_until"]}
+
+
+@app.get("/review", response_class=HTMLResponse)
+def review_page(t: str = ""):
+    """Bearer-token review page opened from an SMS link. Read-only; it places no order and changes nothing."""
+    page = n8n_link.local_review(t)
+    hdr = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex", "Referrer-Policy": "no-referrer"}
+    if page is None:
+        return HTMLResponse("<!doctype html><meta charset=utf-8><title>Link expired</title><p style='font:16px sans-serif;padding:24px'>This review link is invalid or has expired.</p>", status_code=403, headers=hdr)
+    return HTMLResponse(page, headers=hdr)
 
 
 # Serve the built frontend (npm run build) from the same origin when present.

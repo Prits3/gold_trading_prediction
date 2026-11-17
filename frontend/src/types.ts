@@ -194,3 +194,39 @@ export interface ForwardPayload {
   calibration?: CalibrationInfo; next_forecast?: NextForecastInfo;
   evaluation?: { development: DevMetrics | null; forward: ForwardStats };
 }
+
+// ------------------------------------------------------------------------------------------------ alerts
+export interface AlertSettings {
+  forecast_alerts: boolean; price_alerts: boolean; levels: number[]; entry_price: number | null; position_size: number | null; quote_basis: "futures" | "spot";
+  immediate_sms: boolean; price_sms: boolean; morning_enabled: boolean; morning_time: string; morning_tz: string; rearm: "next_session" | "after_drop";
+}
+export interface AlertDelivery { id: number; kind: string; mode: string; state: string; provider_sid: string | null; accepted_at: number | null; delivered_at: number | null; detail: string | null }
+export interface AlertEvent {
+  id: number; alert_type: "forecast_headsup" | "price_crossing"; threshold: number; target_session: string; created_at: number; expires_at: number; message: string;
+  sms_state: string; payload: Record<string, unknown>; deliveries: AlertDelivery[];
+}
+export interface ForecastCheck { at: number; enabled: boolean; forecasts: { task: string; verdict: string; predicted?: number; target_date?: string; issued_at?: number; age_h?: number }[]; new_events: number[] }
+export interface TouchGate { display: boolean; reasons: string[] }
+export interface TouchSlice { n?: number; event_rate?: number; brier?: number; brier_climatology?: number; log_loss?: number; ece?: number;
+  at_cut?: { cut: number; events: number; alerts: number; true_alerts: number; false_alerts: number; missed_events: number; precision: number | null; recall: number | null } }
+export interface TouchPanel {
+  status: "experimental" | "displayed"; reason?: string; selected_variant?: string; data_through?: string; event?: string;
+  lead_time?: { min_h: number; max_h: number; note: string }; gates?: Record<string, TouchGate>;
+  forward: { recorded: number; scored: number; hits: number; mean_probability_scored: number | null; latest: { origin_date: string; target_date: string; level: number; z: number; probability: number; model: string; displayed: number }[] };
+  live_levels?: { level: number; z: number | null; final_slice: { events?: number; n_dates?: number; mean_p?: number | null; observed?: number | null; in_range?: boolean } }[];
+  variants?: Record<string, { selection: TouchSlice; final: TouchSlice }>; improvement_vs_z_only_final?: Record<string, number>; periods?: { selection: string[]; final: string[] };
+  endpoint?: { absolute: Record<string, Record<string, { sessions_below_level: number; events: number; alerts: number; true_alerts: number; false_alerts: number; missed_events: number; precision: number | null; recall: number | null }>>; lead_time: { hours: number; note: string }; oos: string[] } | null;
+}
+export interface AlertsPayload {
+  settings: AlertSettings; levels: { level: number; note: string | null }[]; last_forecast_check: ForecastCheck | null;
+  last_price_check: { at: number; verdict?: string; price?: number; as_of?: number; age_min?: number; basis: string } | null;
+  last_alert: AlertEvent | null; recent: AlertEvent[];
+  delivery: { mode: "simulate" | "live"; configured: boolean; missing: string[]; note: string; review_base: string };
+  last_handoff: { at: number; state: string; detail: string } | null; log: { at: number; topic: string; outcome: string; detail: string | null }[];
+  labels: { forecast_kind: string; entry_note: string }; touch: TouchPanel;
+}
+export interface BasisCheck {
+  levels_apply_to: { instrument: string; currency: string; unit: string; forecast_target: string; price_alert_quote: string; price_alert_quote_note: string };
+  currency_checked: string; quotes: Record<string, { price?: number; as_of?: number; age_min?: number; source?: string; error?: string }>;
+  spot_minus_futures: number | null; entry_price: { value: number | null; verified: boolean; note: string }; warnings: string[];
+}

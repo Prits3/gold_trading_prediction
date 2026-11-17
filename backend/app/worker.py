@@ -29,12 +29,13 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from . import config, db, drivers, ledger, learning, news_store, nowcast, quote, registry
+from . import alerts, config, db, drivers, ledger, learning, n8n_link, news_store, nowcast, quote, registry, threshold_research
 from .data import DataStore, DataUnavailable
 
 log = logging.getLogger("gold.worker")
 SPOT_EVERY = 10
 CYCLE_UTC = (23, 30)           # daily full cycle (after the 17:00 ET close and the daily bar completes)
+ALERT_EVERY = 120             # forecast + quote checks, hand-off and delivery
 SCORE_EVERY = 30 * 60          # look for newly matured outcomes this often
 LEARN_CHECK_EVERY = 5 * 60     # check whether a newly completed session needs forecasts (cheap; the data is cached)
 OVERDUE_AFTER = 26 * 3600
@@ -150,12 +151,40 @@ def job_learn(force: bool = False) -> dict:
     return learning.run_learning(ds.series, d, ds.key, force=force)
 
 
+def job_threshold(force: bool = False) -> dict:
+    """Touch/endpoint threshold research (chronological, once per data version) and the forward touch record. Never touches the models."""
+    ds = _store.get()
+    try:
+        d = drivers.load()
+    except drivers.DriversUnavailable:
+        d = None
+    levels = alerts.get_settings()["levels"]
+    ohlc = threshold_research.get_ohlc()
+    prev = threshold_research.latest()
+    through = ds.series.index[-1].date().isoformat()
+    if force or prev is None or prev.get("data_through") != through or prev.get("levels") != levels:
+        prev = threshold_research.run(ds.series, ohlc, d, levels, through)
+    rec = threshold_research.record_forward(ds.series, ohlc, d, levels, prev)
+    return {"status": prev["status"], "variant": prev["selected_variant"], "forward": rec, "matured": threshold_research.mature_forward(ohlc)}
+
+
+def job_alerts() -> dict:
+    """Evaluate review levels (forecast heads-up and observed-price crossing are independent), then hand off to n8n. Read-only on forecasts."""
+    out = {"forecast": alerts.check_forecasts()["new_events"], "price": alerts.check_price()["new_events"]}
+    out["delivery"] = n8n_link.deliver_pending()
+    out["handoff"] = n8n_link.push_snapshot()["state"]
+    out["sync"] = n8n_link.sync_status().get("state")
+    return out
+
+
 def full_cycle() -> dict:
     """collect -> score -> issue forward forecasts -> develop/evaluate challengers -> decide."""
     out = {"collect": run_job("collect", job_collect)}
     out["score"] = run_job("score", job_score)
     out["learn"] = run_job("learn", job_learn)  # holds the 'learn' lock: retraining cannot overlap itself
     out["nowcast"] = run_job("nowcast", job_nowcast)
+    out["threshold"] = run_job("threshold", job_threshold)
+    out["alerts"] = run_job("alerts", job_alerts)
     return out
 
 
@@ -193,7 +222,7 @@ def run_loop(stop: threading.Event | None = None, once_overdue: bool = True) -> 
         if not got:
             return False
         log.info("worker started (pid %s)", os.getpid())
-        last_spot = last_score = last_hb = last_learn = 0.0
+        last_spot = last_score = last_hb = last_learn = last_alerts = 0.0
         last_hour = -1
         last_cycle_day = None
         if once_overdue and cycle_overdue():
@@ -217,8 +246,13 @@ def run_loop(stop: threading.Event | None = None, once_overdue: bool = True) -> 
                 try:  # fresh completed-session data -> issue the new forecasts promptly (the heavy evaluation runs once per data version)
                     if needs_learning(_store.get().series):
                         run_job("learn", job_learn)
+                        run_job("threshold", job_threshold)
+                        last_alerts = 0.0   # a newly issued forecast is evaluated against the review levels now, not in two minutes
                 except Exception as exc:  # noqa: BLE001
                     log.warning("learn trigger failed: %s", exc)
+            if now - last_alerts >= ALERT_EVERY:
+                last_alerts = now
+                run_job("alerts", job_alerts)
             utc = datetime.now(timezone.utc)
             if (utc.hour, utc.minute) >= CYCLE_UTC and last_cycle_day != utc.date():
                 full_cycle()
@@ -241,7 +275,7 @@ def status() -> dict:
     registry.seed()
     hb = heartbeat_age()
     jobs = {}
-    for j in ("spot", "collect", "score", "learn", "nowcast"):
+    for j in ("spot", "collect", "score", "learn", "nowcast", "threshold", "alerts"):
         r = db.rows("SELECT status, started_at, finished_at, detail FROM job_runs WHERE job=? ORDER BY id DESC LIMIT 1", (j,))
         ok = last_ok(j)
         jobs[j] = {"last": r[0] if r else None, "last_ok": ok, "age_s": None if ok is None else round(time.time() - ok)}
@@ -258,6 +292,11 @@ def main(argv=None) -> int:
     sub.add_parser("once")
     sub.add_parser("learn").add_argument("--force", action="store_true", help="re-run the development evaluation for the current data")
     sub.add_parser("status").add_argument("--json", action="store_true")
+    al = sub.add_parser("alerts", help="evaluate review levels now, or simulate prices/forecasts safely")
+    al.add_argument("--simulate", action="store_true", help="use a throwaway database; never contacts n8n or sends an SMS")
+    al.add_argument("--price", type=float, help="simulated observed quote (USD/oz)")
+    al.add_argument("--forecast", type=float, help="simulated next-session forecast (USD/oz)")
+    sub.add_parser("threshold").add_argument("--force", action="store_true")
     rb = sub.add_parser("rollback")
     rb.add_argument("task", choices=registry.TASKS)
     rb.add_argument("version", nargs="?")
@@ -267,6 +306,16 @@ def main(argv=None) -> int:
         return 0 if run_loop() else (print("another worker already holds the lock; exiting") or 0)
     if a.cmd == "learn":
         print(json.dumps(run_job("learn", job_learn, a.force), indent=1, default=str))
+        return 0
+    if a.cmd == "threshold":
+        print(json.dumps(run_job("threshold", job_threshold, a.force), indent=1, default=str))
+        return 0
+    if a.cmd == "alerts":
+        if a.simulate:
+            from . import alerts_sim
+            print(json.dumps(alerts_sim.simulate(price=a.price, forecast=a.forecast), indent=1, default=str))
+        else:
+            print(json.dumps(run_job("alerts", job_alerts), indent=1, default=str))
         return 0
     if a.cmd == "once":
         print(json.dumps(full_cycle(), indent=1, default=str))

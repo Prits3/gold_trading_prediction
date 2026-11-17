@@ -95,7 +95,7 @@ def _fetch_yahoo(client: httpx.Client | None = None) -> dict:
             "source": "Yahoo Finance GC=F futures (delayed)", "instrument": "COMEX gold futures (GC=F)",
             "day_high": meta.get("regularMarketDayHigh"), "day_low": meta.get("regularMarketDayLow"),
             "previous_close": meta.get("previousClose") or meta.get("chartPreviousClose"),
-            "volume": meta.get("regularMarketVolume")}
+            "volume": meta.get("regularMarketVolume"), "currency": meta.get("currency"), "exchange": meta.get("exchangeName")}
 
 
 def record_tick(price: float, tick_epoch: float | None, retrieved: float | None = None) -> bool:

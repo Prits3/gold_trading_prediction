@@ -85,10 +85,28 @@ collect → validate & save → features → issue forecasts → wait for outcom
 - **News** is archived with original and first-seen timestamps and de-duplicated, but is **not a model input**: reliable historical news is unavailable, and an LLM's memory of past headlines is not a point-in-time record. It needs months of forward data before it can be evaluated. LLM event extraction is intentionally not enabled.
 - **Range calibration, by horizon** (chronological walk-forward; each range uses only earlier information; ranges are not tuned after the fact). Historical coverage vs the claimed 80%: **1 session 80%** (90% interval 77–83), **5 sessions 79%** (74–83), **20 sessions 70%** (62–79; by period 71 / 78 / **62**), average widths 3.5% / 8.1% / 14.4% of price. The 20-session range is shown as **Under-calibrated** (more than 8 points below target) and is weakest in the most recent period.
 
+## Alerts (sell-review notifications)
+
+User-selected **review levels** (default $4,000 and $4,100, USD per troy ounce, against your entry $4,039.96 as entered), never trading advice. Nothing buys or sells; no response means no trade. Two separate alerts:
+
+- **Forecast heads-up:** the next-session *settlement* forecast is at or above a level. It forecasts the close, not whether the day's high touches the level, and says so. A forecast that merely equals the current price (the unchanged-price baseline) never raises it.
+- **Actual-price crossing:** a *fresh observed* quote crossed to or above a level (futures by default, ~10 min delayed; spot optional). Stale quotes raise nothing.
+
+Reliability: one alert per (instrument, threshold, target session, alert type, episode), enforced by a unique key in SQLite; re-arm only after the price was seen below the level (next session by default, or after a configurable drop); alerts expire instead of being texted late; every check, decision and delivery is written to `alert_log` / `alert_events` / `alert_deliveries`. SMS *accepted by the provider* is tracked separately from *delivered*. Alerts read the forecast ledger and never feed training.
+
+**Delivery is n8n + Twilio** (morning outlook default 07:30 Europe/Berlin, configurable in the Alerts panel; optional immediate SMS for a new heads-up). Because a hosted schedule cannot reach a sleeping Mac, the app *pushes* each forecast snapshot to n8n, which runs the morning job from its stored copy and says so when that copy has expired. Setup, the deployment requirement and what remains impossible while the Mac is off: [n8n/README.md](n8n/README.md). The default mode is simulation: **no SMS is sent and n8n is not contacted** until `GOLD_ALERTS_MODE=live` and the `N8N_*` values are set.
+
+```bash
+cd backend && PYTHONPATH=. .venv/bin/python -m app.worker alerts --simulate --price 4101 --forecast 4120   # throwaway database, no SMS
+cd backend && PYTHONPATH=. .venv/bin/python -m app.worker threshold --force                                 # re-run the threshold research
+```
+
+**Touch probability ("will the high reach $4,100?") is a separate, experimental target**, trained on actual daily highs (the provider's daily-bar high was checked against 5-minute data: it is the CME session 18:00-17:00 New York, exact on 21 of 21 days), never derived from the settlement range. Chronological, purged walk-forward; the final slice is never used to choose anything; a probability is shown only if the distance-matched history has at least 30 distinct event dates and is calibrated. Today it is **not shown**. Details, precision/recall, false alerts, missed events, calibration and lead time are in the Alerts panel.
+
 ## Development
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q          # 118 tests
+cd backend && .venv/bin/python -m pytest -q          # 174 tests
 cd frontend && npx tsc --noEmit && npm run build && node --test src/labels.test.mjs   # type check, build, label-collision tests
 cd e2e && URL=http://127.0.0.1:8742 OUT=./shots node verify.mjs   # 82 browser checks, desktop + 390px
 ```

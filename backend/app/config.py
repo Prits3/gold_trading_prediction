@@ -35,3 +35,11 @@ SETTLEMENT_TOLERANCE_USD = float(os.getenv("GOLD_SETTLEMENT_TOLERANCE", "2.0"))
 ALPACA_KEY_ID = os.getenv("ALPACA_API_KEY_ID", "").strip()
 ALPACA_SECRET_KEY = os.getenv("ALPACA_API_SECRET_KEY", "").strip()
 ALPACA_DATA_FEED = (os.getenv("ALPACA_DATA_FEED", "iex").strip() or "iex").lower()
+
+# Alerts. The SMS provider (Twilio) and the recipient phone number live ONLY in n8n; this backend never sees them.
+# GOLD_ALERTS_MODE=simulate (default) never contacts n8n or sends an SMS. "live" needs the three N8N_* values below.
+ALERTS_MODE = os.getenv("GOLD_ALERTS_MODE", "simulate").strip().lower()
+N8N_WEBHOOK_BASE = os.getenv("N8N_WEBHOOK_BASE", "").strip().rstrip("/")    # e.g. https://you.app.n8n.cloud/webhook
+N8N_AUTH_HEADER = os.getenv("N8N_AUTH_HEADER", "X-Gold-Secret").strip()
+N8N_AUTH_SECRET = os.getenv("N8N_AUTH_SECRET", "").strip()                  # also entered once in n8n as a Header Auth credential
+ALERT_REVIEW_BASE_URL = os.getenv("ALERT_REVIEW_BASE_URL", "").strip().rstrip("/")  # default: <N8N_WEBHOOK_BASE>/gold-review

@@ -114,6 +114,89 @@ CREATE TABLE IF NOT EXISTS job_runs (
   status TEXT NOT NULL,           -- running | ok | error | skipped
   detail TEXT
 );
+-- ---------------------------------------------------------------------------------------------------------------------------
+-- Alerts (kept separate from model training: nothing here is ever a training input)
+-- ---------------------------------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alert_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,            -- JSON
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alert_state (
+  key TEXT PRIMARY KEY,           -- e.g. price:futures:4100 (armed / episode / last session) or last_forecast_check
+  value TEXT NOT NULL,            -- JSON
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alert_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedupe_key TEXT NOT NULL UNIQUE,   -- instrument|threshold|target_session|alert_type|episode  (one alert per key, ever)
+  alert_type TEXT NOT NULL,          -- forecast_headsup | price_crossing
+  instrument TEXT NOT NULL,
+  threshold REAL NOT NULL,
+  target_session TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL,          -- after this the SMS is not sent (a late "alert" would read as new)
+  message TEXT NOT NULL,
+  payload TEXT NOT NULL,             -- JSON: the exact numbers behind the message
+  sms_state TEXT NOT NULL            -- not_requested | pending | simulated | handed_off | accepted | delivered | undelivered | failed | expired
+);
+CREATE INDEX IF NOT EXISTS ix_alert_events_created ON alert_events(created_at);
+
+CREATE TABLE IF NOT EXISTS alert_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER REFERENCES alert_events(id),   -- NULL for the morning outlook
+  kind TEXT NOT NULL,                -- immediate | morning
+  created_at REAL NOT NULL,
+  mode TEXT NOT NULL,                -- simulate | live
+  state TEXT NOT NULL,               -- simulated | accepted | delivered | undelivered | failed
+  provider_sid TEXT,                 -- the SMS provider's message id (accepted != delivered)
+  accepted_at REAL,
+  delivered_at REAL,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_alert_deliveries_sid ON alert_deliveries(provider_sid);
+
+CREATE TABLE IF NOT EXISTS review_tokens (
+  token TEXT PRIMARY KEY,
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL,
+  event_id INTEGER,
+  kind TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alert_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at REAL NOT NULL,
+  topic TEXT NOT NULL,               -- forecast_check | price_check | handoff | sync | settings
+  outcome TEXT NOT NULL,             -- short machine word: checked | fired | duplicate | stale | off | error ...
+  detail TEXT
+);
+
+-- Experimental touch-probability forward record: predictions are written BEFORE the outcome exists and never edited.
+CREATE TABLE IF NOT EXISTS touch_forecasts (
+  id TEXT PRIMARY KEY,               -- origin_date|level|model
+  issued_at REAL NOT NULL,
+  origin_date TEXT NOT NULL,
+  target_date TEXT NOT NULL,         -- the next daily bar whose high defines the event
+  level REAL NOT NULL,
+  z REAL NOT NULL,                   -- distance to the level in daily-volatility units at issue
+  probability REAL NOT NULL,
+  model TEXT NOT NULL,
+  displayed INTEGER NOT NULL,        -- 1 only if the evidence gate passed when issued
+  event_def TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS touch_forecasts_no_update BEFORE UPDATE ON touch_forecasts BEGIN SELECT RAISE(ABORT, 'touch forecasts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS touch_forecasts_no_delete BEFORE DELETE ON touch_forecasts BEGIN SELECT RAISE(ABORT, 'touch forecasts are immutable'); END;
+CREATE TABLE IF NOT EXISTS touch_outcomes (
+  forecast_id TEXT PRIMARY KEY REFERENCES touch_forecasts(id),
+  actual_high REAL NOT NULL,
+  hit INTEGER NOT NULL,
+  scored_at REAL NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS touch_outcomes_no_update BEFORE UPDATE ON touch_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are write-once'); END;
+CREATE TRIGGER IF NOT EXISTS touch_outcomes_no_delete BEFORE DELETE ON touch_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are write-once'); END;
 """
 
 _local = threading.local()

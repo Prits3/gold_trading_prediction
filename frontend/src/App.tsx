@@ -6,6 +6,7 @@ import { Header } from "./components/Header";
 import { PriceSummary } from "./components/PriceSummary";
 import { ChartPanel, type ChartView, type ForecastTarget } from "./components/ChartPanel";
 import { ForwardCard, NextSettlementCard } from "./components/ForecastCards";
+import { AlertsPanel } from "./components/AlertsPanel";
 import { Drawer, type DrawerTab } from "./components/Drawer";
 
 function useStored<T extends string | boolean | number>(key: string, init: T): [T, (v: T) => void] {
@@ -64,6 +65,8 @@ export default function App() {
 
       <ChartPanel instrument={instrument} summary={summary.data} view={effView} onView={setView} range={range} onRange={setRange} mode={mode} onMode={setMode}
         target={target} onTarget={onTarget} today={today.data} forward={fwdForChart} onConn={setChartConn} conn={conn} />
+
+      <AlertsPanel />
 
       <button className="gx-link" onClick={() => setDrawer({ open: true, tab: "model" })} data-testid="open-details-2">Model details, methodology & data →</button>
       <footer className="gx-footer">

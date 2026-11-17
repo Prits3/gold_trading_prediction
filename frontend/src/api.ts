@@ -1,4 +1,4 @@
-import type { DriversPanel, ForwardPayload, GldComparison, Horizon, InstrumentKey, LearningPayload, MarketSummary, NewsPayload, OhlcPayload, Prediction, PricePayload, RangeKey, TodayPayload } from "./types";
+import type { AlertSettings, AlertsPayload, BasisCheck, DriversPanel, ForwardPayload, GldComparison, Horizon, InstrumentKey, LearningPayload, MarketSummary, NewsPayload, OhlcPayload, Prediction, PricePayload, RangeKey, TodayPayload } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -46,5 +46,8 @@ export const api = {
   drivers: () => request<DriversPanel>("/api/drivers"),
   gld: (refresh = false) => request<GldComparison>(`/api/compare/gld${refresh ? "?refresh=true" : ""}`),
   news: (refresh = false) => request<NewsPayload>(`/api/news${refresh ? "?refresh=true" : ""}`),
+  alerts: () => request<AlertsPayload>("/api/alerts"),
+  saveAlerts: (patch: Partial<AlertSettings>) => request<AlertsPayload>("/api/alerts/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }),
+  alertsBasis: () => request<BasisCheck>("/api/alerts/basis"),
   downloadUrl: (h: Horizon, key: string) => `/api/predict/download?horizon=${h}&key=${encodeURIComponent(key)}`,
 };
