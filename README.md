@@ -46,6 +46,11 @@
 
 <br>
 
+<p align="center">
+  <a href="docs/GUIDE.md#verified-manually-vs-on-schedule"><img src="docs/screenshots/verification-record.png" alt="Verification record: 266 backend tests, 190 browser checks, an independent forecast trace 21 of 21, and the items not yet observed" width="900"></a><br>
+  <b>Proof, not promises.</b> <sub>A self-issued record: what passed, how to re-run it, and what is still unobserved.</sub>
+</p>
+
 <a name="run-it"></a>
 <h2 align="center">&#9654; Run it</h2>
 
