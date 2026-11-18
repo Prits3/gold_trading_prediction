@@ -18,7 +18,7 @@ export function Header({ page, onPage, summary, conn, onDetails }: { page: PageI
   const st = statusOf(summary, conn);
   return (
     <header className="gx-header">
-      <h1 className="gx-brand">Gold Outlook</h1>
+      <h1 className="gx-brand">Gold Outlook <span className="gx-tag2 mono">{summary?.name?.toLowerCase().includes("spot") ? "XAU/USD spot" : "GC=F / COMEX"}</span></h1>
       <nav className="gx-nav" aria-label="Pages">
         {PAGES.map((p) => (
           <a key={p.id} href={`#/${p.id}`} className={page === p.id ? "on" : ""} aria-current={page === p.id ? "page" : undefined} onClick={(e) => { e.preventDefault(); onPage(p.id); }} data-testid={`nav-${p.id}`}>{p.label}</a>

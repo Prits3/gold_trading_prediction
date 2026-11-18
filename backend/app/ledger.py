@@ -82,10 +82,34 @@ def _audit_conflict(fid: str, data_key: str | None, dataset_hash: str | None, pr
         db.connect().execute("INSERT INTO ledger_audit (at, forecast_id, kind, detail) VALUES (?,?,?,?)", (time.time(), fid, "snapshot_conflict", detail))
 
 
+FALLBACK_KIND = "fallback_not_a_model"
+NOT_FALLBACK = f"f.id NOT IN (SELECT forecast_id FROM ledger_audit WHERE kind='{FALLBACK_KIND}')"
+
+
+def flag_fallbacks() -> int:
+    """Record (never delete or edit) intraday-model rows that were NOT model output.
+
+    Before the fix, an intraday model asked for the NEXT session's settlement (issued after today's 13:30 ET settlement and before the next session opened)
+    silently returned a zero move, so its "forecast" was just the price at issue time, identical to the baseline. Those rows are flagged here and are
+    excluded from scoring and from every model statistic. The rule is the code path itself: the tick's trading session is not the target session."""
+    from .nowcast import NY, session_label
+
+    rows = db.rows("SELECT f.id, f.input_cutoff, f.target_date FROM forecasts f WHERE f.task='nowcast' AND f.algorithm!='unchanged' AND " + NOT_FALLBACK)
+    n = 0
+    for r in rows:
+        lab = session_label(pd.Timestamp(r["input_cutoff"], unit="s", tz="UTC").tz_convert(NY))
+        if lab is None or lab.date().isoformat() != r["target_date"]:
+            db.connect().execute("INSERT INTO ledger_audit (at, forecast_id, kind, detail) VALUES (?,?,?,?)",
+                                 (time.time(), r["id"], FALLBACK_KIND, json.dumps({"reason": "intraday model has no valid input for a next-session target; the stored value is the issue-time price, not a model estimate"})))
+            n += 1
+    return n
+
+
 def mature(daily: pd.Series, now: float | None = None) -> int:
     """Score every unscored forecast whose target session's official close is now in ``daily`` (completed bars only)."""
     now = now or time.time()
-    pending = db.rows("SELECT f.* FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id=f.id WHERE o.forecast_id IS NULL")
+    flag_fallbacks()
+    pending = db.rows(f"SELECT f.* FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id=f.id WHERE o.forecast_id IS NULL AND {NOT_FALLBACK}")
     if not pending:
         return 0
     closes = {d.date().isoformat(): float(v) for d, v in daily.items()}
@@ -106,7 +130,7 @@ def mature(daily: pd.Series, now: float | None = None) -> int:
 def stats(task: str, version: str | None = None, role: str | None = None, since_issued: float | None = None) -> dict:
     """Forward (live-issued) performance from matured outcomes only."""
     q = ("SELECT f.id,f.issued_at,f.horizon,f.base_time,f.target_date,o.abs_error,o.baseline_abs_error,o.in_range,f.predicted,f.base_price,o.actual "
-         "FROM forecasts f JOIN outcomes o ON o.forecast_id=f.id WHERE f.task=?")
+         "FROM forecasts f JOIN outcomes o ON o.forecast_id=f.id WHERE f.task=? AND " + NOT_FALLBACK)
     p: list = [task]
     if version:
         q += " AND f.model_version=?"

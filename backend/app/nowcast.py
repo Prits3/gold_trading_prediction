@@ -239,26 +239,43 @@ def get(daily: pd.Series, force: bool = False) -> dict:
     vol24 = float(last["vol_24"]) if np.isfinite(last["vol_24"]) else float(st.frame["vol_24"].dropna().iloc[-1])
     s = vol24 * np.sqrt(max(scale_hrs, 0.05))
 
-    def predict(algo: str) -> float:
-        if algo == "unchanged" or not same_session or pd.Timestamp(last["session"]) != target:
+    # An intraday model is trained on states INSIDE a session (hours left until THAT session's settlement). Once today's 13:30 settlement has passed and the
+    # next session has not opened, no such state exists for the next target: the model has no valid input, so it is UNAVAILABLE. It must never be given a
+    # zero return and shown as an estimate (that is just the current price, i.e. the baseline).
+    intraday_ok = same_session and pd.Timestamp(last["session"]) == target
+    why_no_model = None if intraday_ok else (
+        "The intraday models only forecast a settlement from inside its own trading session. The next session has not opened yet, so there is no valid input for them.")
+
+    def predict(algo: str) -> float | None:
+        if algo == "unchanged":
             return 0.0
+        if not intraday_ok:
+            return None
         x = last[FEATS].copy()
         x["r_prev"], x["r_open"] = np.log(price / last["prev_close"]), np.log(price / last["first"])
         x["hrs_left"] = scale_hrs
-        return float(st.models[algo].predict(x.to_numpy(dtype=float).reshape(1, -1))[0]) if x.notna().all() else 0.0
+        return float(st.models[algo].predict(x.to_numpy(dtype=float).reshape(1, -1))[0]) if x.notna().all() else None
 
     def pack(algo: str) -> dict:
         mu = predict(algo)
-        return {"algorithm": algo, "predicted_close": round(price * float(np.exp(mu)), 2),
+        if mu is None:
+            return {"algorithm": algo, "available": False, "reason": why_no_model or "The latest intraday inputs are incomplete."}
+        return {"algorithm": algo, "available": True, "predicted_close": round(price * float(np.exp(mu)), 2),
                 "low": round(price * float(np.exp(mu + st.cal["q_lo"] * s)), 2), "high": round(price * float(np.exp(mu + st.cal["q_hi"] * s)), 2),
                 "expected_move_pct": round((float(np.exp(mu)) - 1) * 100, 3)}
 
     champ = st.champion_algo
     main = pack(champ)
+    fallback = not main["available"]            # the champion is a model that cannot predict this target: the explicit baseline is shown instead
+    if fallback:
+        main = pack("unchanged")
     typical = _typical_error(st.cal, scale_hrs)
-    return {**base, **main, "baseline_forecast": pack("unchanged"), "status": "open" if market_open else "closed", "method": "baseline" if champ == "unchanged" else champ,
-            "candidates": [pack(a) for a in st.models], "typical_error_usd": typical,
-            "message": ("Forecast = the latest futures price (no machine-learning model has earned promotion over 'price stays put'), with a range that "
-                        "tightens as the settlement approaches." if champ == "unchanged" else
-                        f"Forecast = latest futures price adjusted by the {champ} model, which earned promotion.")
+    cands = [pack(a) for a in st.models]
+    return {**base, **{k: v for k, v in main.items() if k not in ("available", "algorithm")}, "baseline_forecast": pack("unchanged"),
+            "status": "open" if market_open else "closed", "method": "baseline" if (champ == "unchanged" or fallback) else champ,
+            "fallback_to_baseline": fallback, "intraday_models_available": intraday_ok, "intraday_unavailable_reason": why_no_model,
+            "candidates": [c for c in cands if c["available"]], "unavailable_candidates": [c for c in cands if not c["available"]], "typical_error_usd": typical,
+            "message": ("Reference estimate: assumes no change. No machine-learning model has earned promotion over 'price stays put'." if champ == "unchanged" else
+                        (f"Reference estimate: assumes no change. The {champ} model cannot predict this target yet." if fallback else
+                         f"Forecast = latest futures price adjusted by the {champ} model, which earned promotion."))
             + ("" if market_open else " The market is closed; the price shown is the last trade.")}

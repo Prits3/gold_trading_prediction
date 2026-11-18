@@ -118,7 +118,9 @@ def payload() -> dict:
     return {"worker": worker.status(), "tasks": {t: _task(t) for t in ("fwd_1", "fwd_5", "fwd_20", "nowcast")}, "feature_groups": feature_groups(),
             "attempts": {"recent": att, "ok": db.rows("SELECT COUNT(*) AS n FROM training_attempts WHERE status='ok'")[0]["n"], "failed": db.rows("SELECT COUNT(*) AS n FROM training_attempts WHERE status='failed'")[0]["n"]},
             "cycles": cyc, "quality": quality.summary(),
+            "schedule": worker.cycle_history(5),
             "ledger_audit": {"conflicts": db.rows("SELECT COUNT(*) AS n FROM ledger_audit WHERE kind='snapshot_conflict'")[0]["n"],
+                             "fallbacks": db.rows("SELECT COUNT(*) AS n FROM ledger_audit WHERE kind=?", (ledger.FALLBACK_KIND,))[0]["n"],
                              "recent": db.rows("SELECT at, forecast_id, kind, detail FROM ledger_audit ORDER BY id DESC LIMIT 5")},
             "promotion_rule": learning.PROMOTION_RULE,
             "totals": {"issued": db.rows("SELECT COUNT(*) AS n FROM forecasts")[0]["n"], "matured": db.rows("SELECT COUNT(*) AS n FROM outcomes")[0]["n"]}}

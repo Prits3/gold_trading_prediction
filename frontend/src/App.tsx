@@ -6,11 +6,11 @@ import { rangesFor, type ForecastTarget, type Shown } from "./forecastText";
 import { Header, PAGES, type PageId } from "./components/Header";
 import { PriceSummary } from "./components/PriceSummary";
 import { ChartCard } from "./components/ChartCard";
-import { ResultStrip } from "./components/ResultStrip";
+import { ForecastPanel, SettlementNote } from "./components/ForecastPanel";
 import { AlertsPage } from "./components/AlertsPage";
 import { LearningPage } from "./components/LearningPage";
 import { PaperPage } from "./components/PaperPage";
-import { Drawer, type DrawerTab } from "./components/Drawer";
+import { DetailsPanel, type DetailsTab } from "./components/Details";
 
 function useStored<T extends string | boolean | number>(key: string, init: T): [T, (v: T) => void] {
   const [v, setV] = useState<T>(() => {
@@ -37,7 +37,7 @@ export default function App() {
   const [predicting, setPredicting] = useState(false);
   const [predictErr, setPredictErr] = useState<string | null>(null);
   const [fitToken, setFitToken] = useState(0);
-  const [drawer, setDrawer] = useState<{ open: boolean; tab: DrawerTab }>({ open: false, tab: "model" });
+  const [detailsTab, setDetailsTab] = useState<DetailsTab>("backtest");
   const [chartConn, setChartConn] = useState<Conn>("ok");
   const [dataRev, setDataRev] = useState(0);
 
@@ -73,7 +73,12 @@ export default function App() {
     finally { setPredicting(false); }
   };
 
-  const openDetails = (tab: DrawerTab = "model") => setDrawer({ open: true, tab });
+  // "Details" opens the tab panel under the chart (on the Forecast page) and scrolls it into view.
+  const openDetails = (tab: DetailsTab = "backtest") => {
+    setDetailsTab(tab);
+    if (page !== "forecast") goPage("forecast");
+    setTimeout(() => document.getElementById("details")?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+  };
 
   return (
     <div className="gx">
@@ -89,11 +94,16 @@ export default function App() {
             ))}
           </div>
           <PriceSummary s={summary.data} err={summary.error} />
-          <ChartCard instrument={instrument} summary={summary.data} range={range} onRange={setRange} mode={mode} onMode={setMode}
-            target={target} onTarget={changeTarget} shown={instrument === "futures" ? shown : null} onPredict={predict} predicting={predicting} predictErr={predictErr}
-            onHide={() => { setShown(null); setPredictErr(null); }} fitToken={fitToken} onFit={() => setFitToken((n) => n + 1)} onConn={setChartConn} conn={conn} />
-          {instrument === "futures" && <ResultStrip shown={shown} newerId={newerId} latestPrice={summary.data?.price ?? null} onDetails={() => openDetails()} />}
-          <button className="gx-link" onClick={() => openDetails()} data-testid="open-details-2">Details: model, methodology, drivers & backtests →</button>
+          <div className="gx-workspace">
+            <div className="gx-leftcol">
+              <ChartCard instrument={instrument} summary={summary.data} range={range} onRange={setRange} mode={mode} onMode={setMode}
+                shown={instrument === "futures" ? shown : null} onHide={() => { setShown(null); setPredictErr(null); }} fitToken={fitToken} onFit={() => setFitToken((n) => n + 1)} onConn={setChartConn} conn={conn} />
+              <SettlementNote shown={instrument === "futures" ? shown : null} />
+            </div>
+            <ForecastPanel canPredict={instrument === "futures"} target={target} onTarget={changeTarget} onPredict={predict} predicting={predicting} predictErr={predictErr}
+              shown={instrument === "futures" ? shown : null} newerId={newerId} onDetails={openDetails} />
+          </div>
+          <DetailsPanel shown={instrument === "futures" ? shown : null} tab={detailsTab} onTab={setDetailsTab} />
         </div>
       )}
       {page === "learning" && <LearningPage />}
@@ -103,7 +113,6 @@ export default function App() {
       <footer className="gx-footer">
         For information only — not investment advice. Forecasts are statistical estimates; the price may differ. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts™</a>.
       </footer>
-      <Drawer shown={instrument === "futures" ? shown : null} open={drawer.open} tab={drawer.tab} onTab={(tab) => setDrawer({ open: true, tab })} onClose={() => setDrawer((d) => ({ ...d, open: false }))} />
     </div>
   );
 }

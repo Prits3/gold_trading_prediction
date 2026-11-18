@@ -70,7 +70,7 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
   check("layout: price → one chart → one result strip below it", order[0] < order[1] && order[1] < order[2], order.map(Math.round).join(" < "));
   check("the chart offers Line / Candles, six history ranges, four forecast choices and one Predict button", (await page.locator('[data-testid^="range-"]').count()) === 6 && (await page.locator('[data-testid^="mode-"]').count()) === 2 && (await page.locator('[data-testid^="target-"]').count()) === 4 && (await page.locator('[data-testid="predict"]').count()) === 1);
   check("before Predict: history only (no forecast labels, no connector text) and the strip explains what to do", (await page.locator('[data-testid^="fc-label-"]').count()) === 0 && (await page.getAttribute('[data-testid="chart"]', "data-view")) === "history" && /press Predict/.test(await txt(page, "result-strip")));
-  check("alerts, training logs, model lab, backtests, drivers and methodology are not on the main screen", !/Alerts|Training|Backtest|Methodology|Market drivers/i.test((await page.textContent('[data-testid="page-forecast"]')).replace(/Details: model, methodology, drivers & backtests →/, "")) && (await page.locator(".gx-al-grid, [data-testid=\"alerts-panel\"]").count()) === 0);
+  check("the alerts panel, training logs and model lab are not on the Forecast page (backtest, drivers, methodology are tabs under the chart)", !/Forecast heads-up|Training attempts|Model lab|Promotion/i.test((await page.textContent('[data-testid="page-forecast"]')).replace(/Details: model, methodology, drivers & backtests →/, "")) && (await page.locator(".gx-al-grid, [data-testid=\"alerts-panel\"]").count()) === 0);
   await page.screenshot({ path: `${OUT}/desktop-before-predict.png`, fullPage: true });
 
   const ohlc = await api("/market/ohlc?instrument=futures&range=1D");
@@ -114,12 +114,26 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
     check(`horizon ${t}: origin, forecast (price + target date), range ends and 'Illustrative connection' are all labelled`, ["latest", "ref", "forecast", "high", "low", "conn"].every((k) => a.ids.includes(k)) && /\d{1,2} \w{3} · \d\d:\d\d New York/.test(a.forecast) && /Forecast origin/.test(a.ref), a.ids.join(","));
     check(`horizon ${t}: labels never overlap, are never clipped, never sit under the chart or over the price axis`, a.overlaps.length === 0 && a.clipped.length === 0 && a.covered.length === 0 && a.overAxis.length === 0, `overlaps ${a.overlaps.join(",") || "none"} clipped ${a.clipped.join(",") || "none"} axis ${a.overAxis.join(",") || "none"}`);
     const tgt = await txt(page, "strip-target");
-    check(`horizon ${t}: strip shows target date with New York and Berlin time, expected change, the reference and ONE performance note`, /\d{4}/.test(tgt) && /New York · \d\d:\d\d Berlin/.test(await page.textContent('[data-testid="result-strip"] .gx-cell:nth-child(3)')) && /[▲▼]|Little change/.test(await txt(page, "strip-change")) && /Reference \$[\d,]+\.\d\d · (the official settlement of|the latest futures price)/.test(ref) && (await page.locator('[data-testid="strip-perf"]').count()) === 1, tgt);
+    check(`horizon ${t}: strip shows target date with New York and Berlin time, expected change, the reference and ONE performance note`, /\d{4}/.test(tgt) && /New York · \d\d:\d\d Berlin/.test(await page.textContent('[data-testid="strip-target"]')) && /[▲▼]|Little change/.test(await txt(page, "strip-change")) && /Reference \$[\d,]+\.\d\d/.test(ref) && /(official settlement of|latest futures quote)/.test(ref) && (await page.locator('[data-testid="strip-perf"]').count()) === 1, tgt);
     check(`horizon ${t}: no model ids or version names on the main screen`, !/nowcast:|fwd_\d|price_now_v1|gold_v1|drivers_v1/.test(await page.textContent('[data-testid="page-forecast"]')));
     if (t === "5" || t === "20") check(`horizon ${t}: Predict moved a too-short history range to a daily one so origin and target are both readable`, ["range-3M", "range-1Y"].includes(await page.evaluate(() => document.querySelector('[data-testid^="range-"][aria-selected="true"]')?.dataset.testid)));
     await page.screenshot({ path: `${OUT}/desktop-predict-${t}.png`, fullPage: true });
   }
   check("horizons 5 and 20 have distinct future targets", api4[5].forecast.target_date !== api4[20].forecast.target_date && new Date(api4[20].forecast.target_date) > new Date(api4[5].forecast.target_date));
+  {
+    // ---- the next-settlement card: honest about what produced it, no fake estimates, today's settlement kept separate ----
+    await predict(page, "next");
+    const n = await api("/forecast/today"), st = (await page.textContent('[data-testid="result-strip"]')) || "";
+    check("next-settlement card: titled by its target day, says what produced it once, shows issue time and input-data time", /^(Today|Tomorrow|Next settlement) · \w{3} \d{1,2} \w{3}$/.test(await txt(page, "strip-title")) && (/Reference estimate: assumes no change\./.test(await txt(page, "strip-model")) || /model/i.test(await txt(page, "strip-model"))) && /Issued .+New York\. Input data: .+New York/.test(await txt(page, "strip-ref")), await txt(page, "strip-title"));
+    check("experimental-model lists and evaluation paragraphs are not on the card", !/Experimental model estimates|shadow|Backtest: [+−-]/.test(st.replace(/No demonstrated advantage[\s\S]*$/, "")) && (await page.locator('[data-testid="strip-experimental"]').count()) === 0);
+    const sameAsBaseline = (n.experimental || []).filter((e) => e.predicted === n.forecast.predicted);
+    check("no experimental estimate silently equals the baseline: an intraday model that cannot predict this target is unavailable, not shown as a number", n.route === "intraday" ? true : (n.experimental.length === 0 && n.intraday.available === false && n.intraday.unavailable_models.length > 0 && sameAsBaseline.length === 0), `route ${n.route}, unavailable ${n.intraday?.unavailable_models?.length}`);
+    check("a next-session target is routed to the stored daily forecast or an explicitly labelled baseline, with the matching reference", n.route === "intraday" || (n.route === "daily_model" ? n.forecast.horizon === 1 && n.forecast.source.kind === "model" : n.forecast.source.kind === "baseline" && /assumes no change/.test(n.daily_pending)), n.route);
+    if (n.last_result) check("today's settlement is a separate record, pending until the official close is posted", (await page.locator('[data-testid="settlement-record"]').count()) === 1 && n.last_result.forecast_id !== n.forecast.forecast_id && (n.last_result.actual == null ? /Official close: pending/.test(await txt(page, "settlement-record")) : /Actual close/.test(await txt(page, "settlement-record"))), (await txt(page, "settlement-record")).slice(0, 140));
+    await page.click('[data-testid="dtab-model"]'); await page.waitForSelector('[data-testid="experimental"]', { timeout: 20000 });
+    check("Details → Model holds the experimental estimates (or says they are unavailable for this target)", (await page.locator('[data-testid="exp-row"]').count()) > 0 || (await page.locator('[data-testid="exp-unavailable"]').count()) === 1);
+    await page.click('[data-testid="dtab-backtest"]');
+  }
   const learn = await api("/learning");
   await page.click('[data-testid="target-20"]'); await page.click('[data-testid="predict"]'); await page.waitForTimeout(3000);
   const cal = await txt(page, "calibration");
@@ -179,15 +193,14 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
   await page.click('[data-testid="inst-spot"]'); await page.waitForTimeout(3500);
   const sp = await api("/market/summary?instrument=spot");
   check("spot selected: summary and chart are spot; Predict is unavailable with one clear explanation", /Spot/.test(sp.name) && (await page.isDisabled('[data-testid="predict"]')) && (await page.locator('[data-testid="futures-note"]').count()) === 1 && (await page.locator('[data-testid="result-strip"]').count()) === 0);
-  const prevTxt = await page.textContent(".gx-stats");
+  const prevTxt = await page.textContent(".gx-statrow");
   check("spot previous close: a recorded value or 'Unavailable from provider', never a futures substitute", sp.previous_close == null ? /Unavailable from provider/.test(prevTxt) : /[\d,]+\.\d\d/.test(prevTxt));
   await page.click('[data-testid="inst-futures"]'); await page.waitForTimeout(1500);
 
   // ---- secondary surfaces ----
-  await page.click('[data-testid="open-details"]'); await page.waitForSelector('[data-testid="model-tab"]', { timeout: 20000 });
-  check("Details drawer holds the model, drivers, backtest, news, method and GLD views; calibration audit shows coverage and width", (await page.locator('[data-testid^="dtab-"]').count()) === 6 && (await page.locator('[data-testid="calibration-audit"] tbody tr').count()) === 3);
+  await page.click('[data-testid="open-details"]'); await page.waitForSelector('[data-testid="details-panel"]'); await page.click('[data-testid="dtab-model"]'); await page.waitForSelector('[data-testid="model-tab"]', { timeout: 20000 });
+  check("Details tabs under the chart hold backtest, drivers, GLD, methodology, model and news; calibration audit shows coverage and width", (await page.locator('[data-testid^="dtab-"]').count()) === 6 && (await page.locator('[data-testid="calibration-audit"] tbody tr').count()) === 3);
   await page.screenshot({ path: `${OUT}/desktop-details.png` });
-  await page.keyboard.press("Escape");
   await page.click('[data-testid="nav-alerts"]'); await page.waitForSelector('[data-testid="page-alerts"]'); await page.waitForTimeout(1500);
   check("Alerts & settings is its own page: alerts panel and data sources", /Alerts/i.test(await page.textContent('[data-testid="page-alerts"]')) && (await page.locator('[data-testid="settings-data"]').count()) === 1);
   await page.screenshot({ path: `${OUT}/desktop-alerts.png`, fullPage: true });
@@ -279,7 +292,10 @@ const patchJson = (page, glob, patch) => page.route(glob, async (route) => { con
   }
   const sw2 = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
   check("390px: no horizontal page scroll with a forecast shown", sw2);
-  check("390px: the four strip cells stack readably", (await page.locator('[data-testid="result-strip"] .gx-cell').count()) === 4);
+  {
+    const g = await page.evaluate(() => { const r = (id) => document.querySelector(`[data-testid="${id}"]`).getBoundingClientRect(); const c = r("chart-card"), f = r("forecast-panel"); return { below: f.top >= c.bottom - 1, fits: f.right <= window.innerWidth + 1 && f.left >= -1, ids: ["strip-price", "strip-change", "strip-target", "strip-range", "strip-model", "strip-ref"].every((id) => r(id).width > 0 && r(id).right <= window.innerWidth + 1) }; });
+    check("390px: the forecast panel stacks under the chart and its price, change, target, range, model and inputs all fit the screen", g.below && g.fits && g.ids, JSON.stringify(g));
+  }
   await page.click('[data-testid="nav-alerts"]'); await page.waitForTimeout(1500);
   check("390px: Alerts & settings page has no horizontal scroll", await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
   await page.screenshot({ path: `${OUT}/mobile-alerts.png`, fullPage: true });

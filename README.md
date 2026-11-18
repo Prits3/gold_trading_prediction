@@ -2,7 +2,7 @@
 
 A gold price app with one main screen — choose a horizon, press **Predict**, read the forecast on the chart — and, one click away, a **Learning** page that shows whether the models are really improving, a gold-only **Paper trading** simulation, and **Alerts & settings**.
 
-![Choose a horizon, press Predict: the forecast is drawn on the same chart, with one result strip below](docs/screenshots/predict-desktop.png)
+![Choose a horizon, press Predict: the forecast is drawn on the same chart, with its card in the Forecast configuration panel](docs/screenshots/predict-desktop.png)
 
 | Learning | Paper trading | Mobile |
 |---|---|---|
@@ -72,13 +72,28 @@ Every step of a cycle is recorded and one failing step never stops the rest (a f
 
 ## The screen
 
-Four pages (hash routes: `#/forecast`, `#/learning`, `#/paper`, `#/alerts`) and a **Details** drawer (model, market drivers, backtest, news, methodology, GLD) behind the gear.
+Four pages (hash routes: `#/forecast`, `#/learning`, `#/paper`, `#/alerts`). The Forecast page is a research-terminal layout: a market strip, the chart with a **Forecast configuration** panel beside it, and tabs underneath.
 
 **Forecast** (the landing page)
 
-- **Price summary:** latest price, session change, open, previous close, high, low, USD per troy oz, quote time and delay. Each instrument has its own session convention (below); the two are never mixed.
-- **Choose → Predict → read it on the chart.** One chart with Line / Candles and history ranges 1D–5Y. Under it, a selector (**Next settlement / 1 / 5 / 20 sessions**) and one **Predict** button. Predict fetches the stored forecast for that choice and draws it on the *same* chart: a marker at the forecast origin, a dashed **Illustrative connection** (not a predicted path), a gold dot at the target with its price and New York date/time, and the prediction range. Below the chart, one compact strip: predicted price, expected change, target date (New York and Berlin) and range, with the reference price spelled out, the issue time and one performance note. **Hide forecast** restores the historical chart; **Fit forecast** refits the view; zoom survives live updates and Line/Candles switches. Changing the horizon clears the result until Predict is pressed again, and a newer forecast is offered, never swapped in. **Download CSV** is the displayed forecast (built from the same stored record). A prediction equal to the issue-time price is labelled **Unchanged-price baseline**; the experimental model estimates for the same target are listed beside it, labelled as shadow records. An under-calibrated range reads "80% target range · historical coverage 70%".
-- **Chart** ([TradingView Lightweight Charts™](https://www.tradingview.com/), Apache-2.0, attribution shown): real OHLC candles or a 2px line with light shading, the candle/point interval stated, hover readout, one latest-price marker. Labels on a forecast are collision-resolved and never clip. Provider and session detail sits behind the ⓘ button. Alerts, the model, drivers, backtests and methodology live on their own pages and in the Details drawer, not on the main screen.
+- **Market strip:** latest price, session change, previous close and open, session range, USD per troy oz. Each instrument has its own session convention (below); the two are never mixed.
+- **Chart + Forecast configuration.** The chart has Line / Candles and history ranges 1D–5Y. The panel beside it has the horizon (**Next settlement / 1 / 5 / 20 sessions**) and one **Predict** button. Predict fetches the stored forecast for that choice and draws it on the *same* chart: a marker at the forecast origin, a dashed **Illustrative connection** (not a predicted path), a gold dot at the target with its price and New York date/time, and the prediction range. The panel then shows one compact card: the target day (**"Tomorrow · Thu 19 Nov"**), forecast price, projected change, target session (New York and Berlin), target range with its historical coverage, **what produced the number** (a named model, or the explicit sentence *"Reference estimate: assumes no change."*), when it was issued and what input data it used. **Hide forecast** and **Fit forecast** sit on the chart; zoom survives live updates and Line/Candles switches. Changing the horizon clears the result until Predict is pressed again, and a newer forecast is offered, never swapped in. **Export forecast (CSV)** is the displayed forecast, built from the same stored record. An under-calibrated range reads "80% target range · historical coverage 70%".
+- **Today's settlement is shown separately** under the chart: the forecast that was stored for it and the actual close, or **"Official close: pending"** until the provider posts it. An old forecast is never reconstructed after the outcome is known.
+- **Tabs under the chart:** Backtest, Market drivers, GLD comparison, Methodology, Model & evaluation (the worker, the model per horizon, **experimental model estimates for the shown target**, calibration audit, promotion rules) and News. The Alerts panel, the learning evidence and the paper book are their own pages.
+- **Chart** ([TradingView Lightweight Charts™](https://www.tradingview.com/), Apache-2.0, attribution shown): real OHLC candles or a 2px line with light shading, the candle/point interval stated, hover readout, one latest-price marker. Labels on a forecast are collision-resolved and never clip. Provider and session detail sits behind the ⓘ button.
+
+### What "Next settlement" shows, and what is a fallback
+
+The official close is the 13:30 New York settlement. Which model can forecast it depends on the time:
+
+| When (New York) | Next settlement is | Shown | Label |
+|---|---|---|---|
+| Inside the session whose settlement is the target (from 18:00 the evening before, until 13:30) | today's 13:30 | the hourly intraday forecast (the champion is the unchanged price; ridge, gradient boosting and extra-trees are listed as experimental in Details) | "Reference estimate" or the model name |
+| After 13:30 until the next session opens | **tomorrow's** 13:30 | the stored **1-session daily forecast** for that exact target once it exists (from the official settlement, issued after the daily bar is final); until then the stored unchanged-price baseline | "Model forecast" / **"Reference estimate: assumes no change."** |
+
+The intraday models are trained on states *inside* a session and have no valid input for tomorrow's settlement. Until 18 Nov 2026 they silently returned a zero move there, so all three "experimental estimates" equalled the baseline (the current price) and were presented as model output. That was a bug, not a model result. Now an intraday model with no valid input is **unavailable for that target**: it is not issued, not stored and not shown as a number (Details says "Unavailable for this target" and why). The 21 rows already in the ledger (7 for each of three models) cannot be deleted, so they are **flagged** in `ledger_audit` as `fallback_not_a_model` and excluded from scoring and from every model statistic. Nothing forces a nonzero move.
+
+**Independent check of the 1-, 5- and 20-session forecasts.** `cd backend && PYTHONPATH=. .venv/bin/python -m app.forecast_trace` rebuilds each stored champion forecast from the data up to its base date, refits the model class directly, and confirms: no training label after the cutoff, the target date is the h-th exchange session, the recomputed price equals the stored one to the cent, and the API and the CSV equal the ledger row. On 2026-11-18 all three horizons passed (the three forecasts have no dataset hash because they were issued before hashes were recorded; this is reported, not hidden).
 
 **Learning** — the worker/runtime and its next jobs; the active model **separately for each horizon**; candidates and their latest decisions; the number of **distinct matured forecast origins** per horizon; predicted vs actual and rolling error vs the unchanged price; range **coverage and width**; training history (*improved / worsened / no meaningful change*, with a noise tolerance); data quality; every training attempt including failures. **Genuine forward results** (recorded before the outcome existed) and **walk-forward history** (development evidence, re-examined daily) are separate blocks.
 
@@ -255,11 +270,11 @@ Only what the persistent records show is claimed. Check any line yourself: `./sc
 ## Development
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q          # 256 tests
+cd backend && .venv/bin/python -m pytest -q          # 265 tests
 cd frontend && npx tsc --noEmit && npm run build && node --test src/labels.test.mjs src/ranges.test.mjs   # type check, build, unit tests
-cd e2e && URL=http://127.0.0.1:8750 OUT=./shots node verify.mjs   # 76 browser checks: Predict flow, all horizons, states, export, desktop + 390px
+cd e2e && URL=http://127.0.0.1:8750 OUT=./shots node verify.mjs   # 82 browser checks: Predict flow, all horizons, routing, states, export, desktop + 390px
 bash e2e/run_alerts.sh                                            # 54 alert checks (throwaway data, simulated prices, no SMS)
-bash e2e/run_pages.sh                                             # 53 Learning / Paper / Alerts-page checks (throwaway data)
+bash e2e/run_pages.sh                                             # 54 Learning / Paper / Alerts-page checks (throwaway data)
 ```
 
 Layout: `backend/app/` — `market.py` (OHLC and summaries), `nowcast.py`, `learning.py` + `registry.py` + `ledger.py` + `db.py` (the loop), `feature_groups.py` (patterns, Fibonacci), `quality.py` (quarantine), `paper.py` (simulation), `workspace.py` (Learning payload), `drivers.py` + `research_drivers.py`, `alerts.py` + `n8n_link.py` + `review.py` + `threshold_research.py`, `worker.py` (daemon and CLI); `frontend/src/` — the four pages; `scripts/worker.sh` + `scripts/launchd/`; `deploy/` — always-on worker files (untested here); `n8n/` — the alert workflow.

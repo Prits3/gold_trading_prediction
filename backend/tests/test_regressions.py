@@ -127,7 +127,8 @@ def _issue(task, version, base, pred, target_date, issued, horizon=None, role="c
 
 def _fake_nowcast(price, market_open=True):
     return {"target_date": "2099-01-02", "target_time": "2099-01-02T13:30:00-05:00", "market_open": market_open, "anchor_price": price, "anchor_time_epoch": time.time() - 600, "anchor_delay_seconds": 600,
-            "calibration": {"coverage_by_session_pct": 84.0, "coverage_ci90_pct": [80.0, 87.0], "n_sessions": 121}, "typical_error_usd": 3.4}
+            "calibration": {"coverage_by_session_pct": 84.0, "coverage_ci90_pct": [80.0, 87.0], "n_sessions": 121}, "typical_error_usd": 3.4,
+            "phase": "pre_settlement", "intraday_models_available": True, "intraday_unavailable_reason": None, "unavailable_candidates": []}
 
 
 def test_the_displayed_forecast_does_not_move_when_the_quote_moves(monkeypatch):

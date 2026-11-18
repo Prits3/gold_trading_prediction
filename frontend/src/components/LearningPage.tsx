@@ -36,7 +36,9 @@ function Runtime({ d }: { d: WorkspacePayload }) {
         <div><dt>Last scoring</dt><dd>{ok("score")}</dd></div>
         <div><dt>Last training / evaluation</dt><dd>{ok("learn")}</dd></div>
         <div><dt>Forecasts logged / scored</dt><dd className="mono">{d.totals.issued} / {d.totals.matured}</dd></div>
+        <div data-testid="lr-schedule"><dt>Scheduled daily cycle (23:30 UTC)</dt><dd><b>{d.schedule.verdict}</b>{Object.keys(d.schedule.counts).length ? ` Recorded cycles by trigger: ${Object.entries(d.schedule.counts).map(([k, v]) => `${k} ${v}`).join(", ")}.` : " No full cycle is recorded at all."}</dd></div>
       </dl>
+      <p className="gx-micro" data-testid="lr-proof-note">A moving quote does not show that training ran. These rows come from the worker's persistent job and cycle records: the heartbeat proves the process is alive, the last training row proves a training run finished, and only a recorded <code>scheduled</code> cycle proves the daily schedule fired.</p>
       <h3>Next scheduled jobs</h3>
       <table className="gx-table" data-testid="lr-next-jobs"><thead><tr><th>Job</th><th>Next run</th><th>State</th></tr></thead>
         <tbody>{w.next_runs.map((r) => (
@@ -196,7 +198,7 @@ function Quality({ d }: { d: WorkspacePayload }) {
     <section className="gx-card" data-testid="lr-quality">
       <div className="gx-card-head"><h2>DATA QUALITY</h2><span className={`gx-chip ${q.blocking.length ? "warnchip" : "base"}`}>{q.blocking.length ? "Learning blocked" : "Learning allowed"}</span></div>
       <p className="gx-micro">Problems are detected and recorded, never deleted: duplicates, out-of-order rows, invalid highs, wrong units, a stale feed, provider schema changes. Large moves are checked and kept, not removed for being large. Only a schema change, wrong units or a stale feed block learning (the working models stay in place).</p>
-      <p className="gx-micro">By status: {Object.keys(q.by_status).length ? Object.entries(q.by_status).map(([k, v]) => `${k} ${v}`).join(" · ") : "nothing recorded"}. Ledger audit: {d.ledger_audit.conflicts} re-issue{d.ledger_audit.conflicts === 1 ? "" : "s"} from a different dataset snapshot (ignored; the original forecast and its timestamp stand, and each is recorded).</p>
+      <p className="gx-micro">By status: {Object.keys(q.by_status).length ? Object.entries(q.by_status).map(([k, v]) => `${k} ${v}`).join(" · ") : "nothing recorded"}. Ledger audit: {d.ledger_audit.conflicts} re-issue{d.ledger_audit.conflicts === 1 ? "" : "s"} from a different dataset snapshot (ignored; the original forecast and its timestamp stand, and each is recorded). {d.ledger_audit.fallbacks} intraday-model row{d.ledger_audit.fallbacks === 1 ? "" : "s"} issued while the model had no valid input for the target were flagged as not model output (kept, never scored, excluded from every model statistic).</p>
       {q.blocking.map((b) => <p key={b.key + b.kind} className="gx-micro gx-warnline">{b.kind}: {b.detail}</p>)}
       {q.recent.length > 0 && <details className="gx-al-details"><summary>Recent findings ({q.recent.length})</summary>
         <ul className="gx-al-list">{q.recent.map((f) => <li key={f.kind + f.key}><b>{f.kind}</b> · {f.key} · <span className="gx-muted">{f.status}</span><br /><span className="gx-micro">{f.detail}</span></li>)}</ul></details>}

@@ -10,10 +10,10 @@ import { MarketContext } from "./MarketContext";
 import { Methodology } from "./Methodology";
 import { ErrorBlock, Info, Skeleton } from "./Common";
 
-export type DrawerTab = "model" | "drivers" | "backtest" | "news" | "method" | "gld";
-const TABS: { id: DrawerTab; label: string }[] = [
-  { id: "model", label: "Model" }, { id: "drivers", label: "Market drivers" }, { id: "backtest", label: "Backtest" },
-  { id: "news", label: "News" }, { id: "method", label: "Method" }, { id: "gld", label: "GLD" },
+export type DetailsTab = "model" | "drivers" | "backtest" | "news" | "method" | "gld";
+export const DETAIL_TABS: { id: DetailsTab; label: string }[] = [
+  { id: "backtest", label: "Backtest" }, { id: "drivers", label: "Market drivers" }, { id: "gld", label: "GLD comparison" },
+  { id: "method", label: "Methodology" }, { id: "model", label: "Model & evaluation" }, { id: "news", label: "News" },
 ];
 const TASK_NAME: Record<string, string> = { nowcast: "Today's settlement", fwd_1: "1-session forecast", fwd_5: "5-session forecast", fwd_20: "20-session forecast" };
 const when = (t: number | null | undefined) => (t ? `${fmtEt(t, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false })} ET` : "never");
@@ -59,6 +59,29 @@ function ShownForecast({ title, f, referenceNote, cal }: { title: string; f: Fro
   );
 }
 
+const SCHEMA_WORDS: Record<string, string> = { gold_v1: "gold inputs", drivers_v1: "+ market drivers", intraday_v1: "intraday inputs", patterns_v1: "+ chart patterns", fib_v1: "+ patterns & Fibonacci (experimental)" };
+
+/** Experimental (shadow) estimates for the same target, kept out of the forecast card. Models that cannot predict the target are listed as unavailable, never as a number. */
+function Experimental({ payload }: { payload: TodayPayload | ForwardPayload }) {
+  const exp = payload.experimental ?? [];
+  const intra = (payload as TodayPayload).intraday;
+  const unavailable = (payload as TodayPayload).route && (payload as TodayPayload).route !== "intraday" ? intra?.unavailable_models ?? [] : [];
+  return (
+    <div data-testid="experimental" className="gx-expblock">
+      <h4>Experimental model estimates for this target</h4>
+      {exp.length > 0 && <>
+        <p className="gx-micro">Shadow forecasts: recorded before the outcome, not in control of the forecast shown. None has shown an advantage over the unchanged price.</p>
+        <table className="gx-table"><thead><tr><th>Model</th><th>Inputs</th><th>Estimate</th><th>Range</th></tr></thead>
+          <tbody>{exp.map((e) => <tr key={e.forecast_id} data-testid="exp-row"><td>{e.label.replace(" model", "")}</td><td>{SCHEMA_WORDS[e.feature_schema] ?? e.feature_schema}</td><td className="mono">${num(e.predicted)}</td><td className="mono">{e.low != null && e.high != null ? `$${num(e.low)}–$${num(e.high)}` : "—"}</td></tr>)}</tbody></table>
+      </>}
+      {unavailable.length > 0 && (
+        <p className="gx-micro" data-testid="exp-unavailable"><b>Unavailable for this target:</b> {unavailable.map((u) => u.label.replace(" model", "")).join(", ")}. {intra?.reason} Nothing is shown in their place, and no estimate is forced.</p>
+      )}
+      {exp.length === 0 && unavailable.length === 0 && <p className="gx-micro">No experimental estimates were recorded for this target.</p>}
+    </div>
+  );
+}
+
 function ModelTab({ shown }: { shown: Shown | null }) {
   const { data, error, refresh } = usePoll<LearningPayload>(api.learning, 30000, "learning");
   if (!data) return error ? <ErrorBlock title="Could not load model details" message={error} onRetry={refresh} /> : <Skeleton h={240} />;
@@ -77,8 +100,10 @@ function ModelTab({ shown }: { shown: Shown | null }) {
       <section data-testid="shown-forecasts">
         <h3>Forecast on the chart</h3>
         {!shown ? <p className="gx-muted">No forecast is displayed. Press Predict on the Forecast page.</p> : shown.target === "next"
-          ? <ShownForecast title="Next settlement" f={(shown.payload as TodayPayload).forecast} cal={(shown.payload as TodayPayload).calibration} referenceNote="latest futures price at issue" />
+          ? <ShownForecast title="Next settlement" f={(shown.payload as TodayPayload).forecast} cal={(shown.payload as TodayPayload).calibration}
+              referenceNote={(shown.payload as TodayPayload).route === "daily_model" ? `official settlement of ${baseDate((shown.payload as TodayPayload).base_date ?? undefined)}` : "latest futures price at issue"} />
           : <ShownForecast title={`${shown.target}-session forecast`} f={(shown.payload as ForwardPayload).forecast} cal={(shown.payload as ForwardPayload).calibration} referenceNote={`official settlement of ${baseDate((shown.payload as ForwardPayload).base_date)}`} />}
+        {shown && <Experimental payload={shown.payload} />}
       </section>
       <section>
         <h3>Current model per forecast</h3>
@@ -252,37 +277,21 @@ export function DataSettings({ onChanged }: { onChanged: () => void }) {
   );
 }
 
-// ------------------------------------------------------------------------------------------------ Drawer
-export function Drawer({ shown, open, tab, onTab, onClose }: { shown: Shown | null; open: boolean; tab: DrawerTab; onTab: (t: DrawerTab) => void; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const k = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", k);
-    ref.current?.focus();
-    return () => document.removeEventListener("keydown", k);
-  }, [open, onClose]);
-  if (!open) return null;
+// ------------------------------------------------------------------------------------------------ Details panel (tabs under the chart)
+export function DetailsPanel({ shown, tab, onTab }: { shown: Shown | null; tab: DetailsTab; onTab: (t: DetailsTab) => void }) {
   return (
-    <div className="gx-drawer-wrap" data-testid="drawer">
-      <div className="gx-backdrop" onClick={onClose} aria-hidden="true" />
-      <aside className="gx-drawer" role="dialog" aria-modal="true" aria-label="Details and settings" ref={ref} tabIndex={-1}>
-        <div className="gx-drawer-head">
-          <h2>Details</h2>
-          <button className="gx-icon" onClick={onClose} aria-label="Close">×</button>
-        </div>
-        <div className="gx-tabs" role="tablist">
-          {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)} data-testid={`dtab-${t.id}`}>{t.label}</button>)}
-        </div>
-        <div className="gx-drawer-body">
-          {tab === "model" && <ModelTab shown={shown} />}
-          {tab === "drivers" && <DriversTab />}
-          {tab === "backtest" && <BacktestTab />}
-          {tab === "news" && <NewsTab />}
-          {tab === "method" && <MethodTab />}
-          {tab === "gld" && <GldComparison />}
-        </div>
-      </aside>
-    </div>
+    <section className="gx-details" id="details" aria-label="Details" data-testid="details-panel">
+      <div className="gx-tabs" role="tablist">
+        {DETAIL_TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)} data-testid={`dtab-${t.id}`}>{t.label}</button>)}
+      </div>
+      <div className="gx-details-body">
+        {tab === "model" && <ModelTab shown={shown} />}
+        {tab === "drivers" && <DriversTab />}
+        {tab === "backtest" && <BacktestTab />}
+        {tab === "news" && <NewsTab />}
+        {tab === "method" && <MethodTab />}
+        {tab === "gld" && <GldComparison />}
+      </div>
+    </section>
   );
 }

@@ -40,7 +40,7 @@ export function niceAxis(lo: number, hi: number, target = 5) {
   return { domain: [min, max] as [number, number], ticks };
 }
 
-const ET = "America/New_York";
+export const ET = "America/New_York";
 export const fmtEt = (epochSec: number, opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) =>
   new Intl.DateTimeFormat("en-GB", { timeZone: ET, ...opts }).format(new Date(epochSec * 1000));
 export const fmtEtDay = (epochSec: number) => fmtEt(epochSec, { weekday: "short", day: "numeric", month: "short" });

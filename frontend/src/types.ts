@@ -182,12 +182,21 @@ export interface ForecastResult { matured: boolean; actual: number | null; abs_e
 export interface NextForecastInfo { state: "waiting_for_provider" | "issuing" | "scheduled"; message: string }
 export interface PendingSettlement { date: string; reason: string; close_seen?: number; settlement_price?: number }
 export interface ExperimentalForecast { forecast_id: string; algorithm: string; label: string; feature_schema: string; version: string; predicted: number; low: number | null; high: number | null }
+export interface SettlementRecord {
+  forecast_id: string; target_date: string; target_time: string; predicted: number; low: number | null; high: number | null; reference_price: number;
+  issued_at: number; input_cutoff: number; source: { kind: "baseline" | "model"; label: string; version: string };
+  actual: number | null; abs_error: number | null; in_range: boolean | null; status: "scored" | "pending";
+}
+/** `intraday`: an hourly forecast for the session that is open. `daily_model`: the next settlement is a LATER session, so the stored 1-session daily forecast is shown.
+ *  `baseline_reference`: that daily forecast is not issued yet, so the stored unchanged-price baseline is shown, labelled as such. */
+export type ForecastRoute = "intraday" | "daily_model" | "baseline_reference";
 export interface TodayPayload {
-  status: "current" | "completed" | "none"; message?: string; forecast?: FrozenForecast; result?: ForecastResult | null; market_open?: boolean;
+  status: "current" | "completed" | "none"; message?: string; route?: ForecastRoute; forecast?: FrozenForecast; result?: ForecastResult | null; market_open?: boolean;
   next_update_epoch?: number | null; pending_settlement?: PendingSettlement | null; calibration?: CalibrationInfo;
   live?: { price: number; as_of_epoch: number; delay_seconds: number; label: string; vs_forecast: number; vs_forecast_pct: number };
-  next_target?: { target_date: string; target_time: string }; experimental?: ExperimentalForecast[];
-  last_result?: { target_date: string; predicted: number; actual: number | null; abs_error: number | null; in_range: boolean | null; status: "scored" | "awaiting_official_figure" };
+  next_target?: { target_date: string; target_time: string }; experimental?: ExperimentalForecast[]; daily_pending?: string | null; base_date?: string | null;
+  intraday?: { available: boolean; reason: string | null; unavailable_models: { algorithm: string; label: string; reason: string }[] };
+  last_result?: SettlementRecord | null;
 }
 export interface ForwardPayload {
   status: "current" | "completed" | "none"; horizon: Horizon; message?: string; forecast?: FrozenForecast; result?: ForecastResult | null; base_date?: string;
@@ -274,7 +283,8 @@ export interface WorkspacePayload {
   worker: WorkerStatus; tasks: Record<string, WsTask>; feature_groups: FeatureGroups;
   attempts: { recent: { at: number; task: string; version: string; stage: string; status: string; data_through: string | null; duration_s: number | null; detail: string | null }[]; ok: number; failed: number };
   cycles: CycleRun[]; quality: { by_status: Record<string, number>; by_kind: Record<string, number>; blocking: QualityFinding[]; recent: QualityFinding[] };
-  ledger_audit: { conflicts: number; recent: { at: number; forecast_id: string; kind: string; detail: string }[] }; promotion_rule: string[]; totals: { issued: number; matured: number };
+  schedule: { counts: Record<string, number>; scheduled_ok: number; next_scheduled_utc: string; verdict: string; recent: { id: number; trigger: string; runtime: string | null; started_at: number; finished_at: number | null; status: string; data_through: string | null }[] };
+  ledger_audit: { conflicts: number; fallbacks: number; recent: { at: number; forecast_id: string; kind: string; detail: string }[] }; promotion_rule: string[]; totals: { issued: number; matured: number };
 }
 export interface PaperParams { task: string; role: string; min_net_edge_bps: number; spread_bps: number; slippage_bps: number; commission_per_oz: number; max_position_pct: number; stop_loss_pct: number; max_daily_loss_pct: number; max_drawdown_pct: number; max_trades_per_day: number; cooldown_minutes: number; quote_max_age_min: number }
 export interface PaperPerf {

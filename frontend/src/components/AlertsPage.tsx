@@ -2,7 +2,7 @@ import { api } from "../api";
 import { usePoll } from "../hooks";
 import { etDate, fmtAgo, fmtEt } from "../format";
 import { AlertsPanel } from "./AlertsPanel";
-import { DataSettings } from "./Drawer";
+import { DataSettings } from "./Details";
 
 const when = (t: number | null | undefined) => (t ? `${etDate(t * 1000)}, ${fmtEt(t, { hour: "2-digit", minute: "2-digit", hour12: false })} New York` : "never");
 

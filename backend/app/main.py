@@ -362,33 +362,73 @@ def _pending(ds) -> dict | None:
 
 def _experimental(f: dict) -> list[dict]:
     """Shadow (non-production) forecasts for exactly the same target and base as ``f``: recorded before the outcome, not in control of anything."""
-    rows = db.rows("SELECT * FROM forecasts WHERE task=? AND role='shadow' AND target_date=? AND base_time=? ORDER BY algorithm, feature_schema",
+    rows = db.rows("SELECT * FROM forecasts f WHERE f.task=? AND f.role='shadow' AND f.target_date=? AND f.base_time=? AND " + ledger.NOT_FALLBACK + " ORDER BY f.algorithm, f.feature_schema",
                    (f["task"], f["target_date"], f["base_time"]))
     return [{"forecast_id": r["id"], "algorithm": r["algorithm"], "label": ALGO_LABEL.get(r["algorithm"], r["algorithm"]), "feature_schema": r["feature_schema"],
              "version": r["model_version"], "predicted": round(r["predicted"], 2), "low": None if r["low"] is None else round(r["low"], 2),
              "high": None if r["high"] is None else round(r["high"], 2)} for r in rows]
 
 
+def _settlement_record(target_before: str) -> dict | None:
+    """The most recent settlement whose forecast is finished, SEPARATE from the forecast for the next one: what was stored before it, and the actual (or pending).
+    Only stored rows are read; nothing is reconstructed after the outcome is known."""
+    prev = db.rows("SELECT f.*, o.actual, o.abs_error, o.in_range FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id=f.id "
+                   "WHERE f.task='nowcast' AND f.algorithm='unchanged' AND f.target_date<? ORDER BY f.target_date DESC, f.issued_at DESC LIMIT 1", (target_before,))
+    if not prev:
+        return None
+    r = prev[0]
+    return {"forecast_id": r["id"], "target_date": r["target_date"], "target_time": r["target_time"], "predicted": round(r["predicted"], 2), "low": r["low"], "high": r["high"],
+            "reference_price": round(r["base_price"], 2), "issued_at": r["issued_at"], "input_cutoff": r["input_cutoff"],
+            "source": {"kind": "baseline", "label": ALGO_LABEL["unchanged"], "version": r["model_version"]},
+            "actual": None if r["actual"] is None else round(r["actual"], 2), "abs_error": None if r["abs_error"] is None else round(r["abs_error"], 2),
+            "in_range": None if r["in_range"] is None else bool(r["in_range"]), "status": "scored" if r["actual"] is not None else "pending"}
+
+
 @app.get("/api/forecast/today")
 def forecast_today():
-    """The next-settlement forecast exactly as issued (frozen), a separately labelled live comparison, and the previous result."""
+    """The next-settlement forecast exactly as stored (frozen), with an explicit ``route``:
+
+    * ``intraday``: the target settlement belongs to the session that is open now, so the hourly intraday forecast applies;
+    * ``daily_model``: the next settlement is a LATER session (today's has passed), which the intraday models cannot forecast, so the stored 1-session daily forecast
+      for that exact target is shown (with the previous official settlement as its reference);
+    * ``baseline_reference``: that daily forecast is not issued yet, so the stored unchanged-price baseline is shown, labelled as such.
+    A fallback is never presented as a model estimate."""
     ds = _dataset()
     try:
         n = nowcast.get(ds.series)
     except nowcast.NowcastUnavailable:
         n = None
-    f = None
+    f, route, daily_pending = None, "intraday", None
+
+    def _nowcast_row(tdate: str, baseline_only: bool = False):
+        q = "SELECT * FROM forecasts WHERE task='nowcast' AND target_date=? AND " + ("algorithm='unchanged'" if baseline_only else "role='champion'") + " ORDER BY issued_at DESC LIMIT 1"
+        r = db.rows(q, (tdate,))
+        return r[0] if r else None
+
     if n:
-        def _cur():
-            r = db.rows("SELECT * FROM forecasts WHERE task='nowcast' AND role='champion' AND target_date=? ORDER BY issued_at DESC LIMIT 1", (n["target_date"],))
-            return r[0] if r else None
-        f = _cur()
-        if f is None and n["market_open"]:
-            try:
-                worker.issue_nowcast(ds.series)  # idempotent; normally the worker has already done this
-            except Exception:  # noqa: BLE001
-                pass
-            f = _cur()
+        if n["phase"] == "next_session":
+            d1 = db.rows("SELECT * FROM forecasts WHERE task='fwd_1' AND role='champion' AND target_date=? ORDER BY issued_at DESC LIMIT 1", (n["target_date"],))
+            if d1:
+                f, route = d1[0], "daily_model"
+            else:
+                route = "baseline_reference"
+                daily_pending = (f"The 1-session model forecast for {n['target_date']} is issued once today's official settlement is final (the daily bar completes after 17:00 New York). "
+                                 "Until then this is the reference estimate: it assumes no change.")
+                f = _nowcast_row(n["target_date"], baseline_only=True)
+                if f is None and n["market_open"]:
+                    try:
+                        worker.issue_nowcast(ds.series)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    f = _nowcast_row(n["target_date"], baseline_only=True)
+        else:
+            f = _nowcast_row(n["target_date"])
+            if f is None and n["market_open"]:
+                try:
+                    worker.issue_nowcast(ds.series)  # idempotent; normally the worker has already done this
+                except Exception:  # noqa: BLE001
+                    pass
+                f = _nowcast_row(n["target_date"])
     if f is None:  # nothing issued for the upcoming settlement yet: keep showing the last valid forecast, marked by its real state
         r = db.rows("SELECT * FROM forecasts WHERE task='nowcast' AND role='champion' ORDER BY issued_at DESC LIMIT 1")
         f = r[0] if r else None
@@ -396,30 +436,31 @@ def forecast_today():
         return {"status": "none", "message": "No settlement forecast has been issued yet. One is issued each hour while the market is open."}
     now = time.time()
     completed = pd.Timestamp(f["target_time"]).timestamp() <= now
-    out = {"status": "completed" if completed else "current", "forecast": _frozen(f, 1.0), "result": _result(f) if completed else None,
+    horizon_sessions = float(f["horizon"]) if f["task"] != "nowcast" else 1.0
+    out = {"status": "completed" if completed else "current", "route": route, "forecast": _frozen(f, horizon_sessions), "result": _result(f) if completed else None,
            "market_open": bool(n and n["market_open"]), "next_update_epoch": _next_hour_epoch(now) if n and n["market_open"] else None, "pending_settlement": _pending(ds),
-           "experimental": _experimental(f)}
+           "experimental": _experimental(f) if route != "baseline_reference" else [], "daily_pending": daily_pending,
+           "intraday": {"available": bool(n and n["intraday_models_available"]), "reason": (n or {}).get("intraday_unavailable_reason") if n else "No live quote is available.",
+                        "unavailable_models": [{"algorithm": c["algorithm"], "label": ALGO_LABEL.get(c["algorithm"], c["algorithm"]), "reason": c["reason"]} for c in (n or {}).get("unavailable_candidates", [])]},
+           "base_date": f["base_time"] if f["task"] != "nowcast" else None}
+    if f["task"] != "nowcast":
+        out["calibration"] = learning.calibration_summary(f["task"], f["base_price"])
     if n:
         live = n["anchor_price"]
         out["live"] = {"price": live, "as_of_epoch": n["anchor_time_epoch"], "delay_seconds": n["anchor_delay_seconds"], "label": "Latest futures quote",
                        "vs_forecast": round(live - f["predicted"], 2), "vs_forecast_pct": round((live / f["predicted"] - 1) * 100, 3)}
-        cal = n["calibration"]
-        width = (f["high"] - f["low"]) / f["predicted"] * 100
-        out["calibration"] = {"target_pct": 80.0, "historical_pct": cal["coverage_by_session_pct"], "ci90_pct": cal["coverage_ci90_pct"], "n_dates": cal["n_sessions"],
-                              "historical_basis": "held-out sessions (not hourly rows)", "mean_width_pct": round(width, 3), "mean_width_usd": round(f["high"] - f["low"], 2),
-                              "label": learning.calibration_label(cal["coverage_by_session_pct"]), "typical_error_usd": n.get("typical_error_usd")}
+        if f["task"] == "nowcast":
+            cal = n["calibration"]
+            width = (f["high"] - f["low"]) / f["predicted"] * 100
+            out["calibration"] = {"target_pct": 80.0, "historical_pct": cal["coverage_by_session_pct"], "ci90_pct": cal["coverage_ci90_pct"], "n_dates": cal["n_sessions"],
+                                  "historical_basis": "held-out sessions (not hourly rows)", "mean_width_pct": round(width, 3), "mean_width_usd": round(f["high"] - f["low"], 2),
+                                  "label": learning.calibration_label(cal["coverage_by_session_pct"]), "typical_error_usd": n.get("typical_error_usd")}
         out["next_target"] = {"target_date": n["target_date"], "target_time": n["target_time"]}
     if completed:
         out["message"] = ("This settlement has passed; its official figure is not posted yet." if not out["result"]["matured"] else "This settlement has passed.") + \
                          (" The next forecast is issued while the market is open." if not (n and n["market_open"]) else "")
-    prev = db.rows("SELECT f.*, o.actual, o.abs_error, o.in_range FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id=f.id "
-                   "WHERE f.task='nowcast' AND f.role='champion' AND f.target_date<? ORDER BY f.target_date DESC, f.issued_at DESC LIMIT 1", (f["target_date"],))
-    if prev:
-        r = prev[0]
-        out["last_result"] = {"target_date": r["target_date"], "predicted": round(r["predicted"], 2), "low": r["low"], "high": r["high"], "issued_at": r["issued_at"],
-                              "actual": None if r["actual"] is None else round(r["actual"], 2), "abs_error": None if r["abs_error"] is None else round(r["abs_error"], 2),
-                              "in_range": None if r["in_range"] is None else bool(r["in_range"]),
-                              "status": "scored" if r["actual"] is not None else "awaiting_official_figure"}
+    # Today's (or the last) finished settlement, kept apart from the forecast for the next one. Pending until the official close is posted.
+    out["last_result"] = _settlement_record(n["target_date"] if n else f["target_date"])
     return out
 
 

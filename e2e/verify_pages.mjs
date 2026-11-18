@@ -35,6 +35,11 @@ const noOverflow = (page) => page.evaluate(() => document.documentElement.scroll
   const nj = await page.locator('[data-testid="lr-next-jobs"] tbody tr').count();
   check("next scheduled jobs are listed with their state, including the daily cycle", nj === w.next_runs.length && nj >= 6 && /Full daily cycle/.test(await T(page, "lr-next-jobs")), `${nj} jobs`);
   check("the last full cycle shows its ordered steps (collect → validate → score → learn → …)", /Collect/.test(await T(page, "lr-runtime")) && (!w.last_cycle || (await page.locator(".gx-steps li").count()) === w.last_cycle.steps.length));
+  {
+    const ws = await (await fetch(`${URL}/api/learning/workspace`)).json();
+    const sch = await T(page, "lr-schedule");
+    check("worker: the scheduled-cycle record is shown from the persistent cycle log, and 'scheduled' is never claimed without a recorded scheduled cycle", sch.includes(ws.schedule.verdict) && (ws.schedule.scheduled_ok > 0 || /No scheduled cycle has been recorded yet/.test(sch)) && /does not show that training ran|moving quote/i.test(await T(page, "lr-proof-note")), sch.slice(0, 120));
+  }
   const rows = await page.locator('[data-testid^="lr-row-"]').count();
   check("active model is shown separately for each horizon (1, 5, 20 sessions and next settlement)", rows === 4);
   let okRows = true;
