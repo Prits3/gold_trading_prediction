@@ -1,12 +1,13 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { usePoll } from "./hooks";
-import type { Conn, Horizon, InstrumentKey, RangeKey } from "./types";
-import { Header } from "./components/Header";
+import type { Conn, ForwardPayload, InstrumentKey, RangeKey, TodayPayload } from "./types";
+import { DEFAULT_RANGE, FIT_RANGES, type ForecastTarget, type Shown } from "./forecastText";
+import { Header, PAGES, type PageId } from "./components/Header";
 import { PriceSummary } from "./components/PriceSummary";
-import { ChartPanel, type ChartView, type ForecastTarget } from "./components/ChartPanel";
-import { ForwardCard, NextSettlementCard } from "./components/ForecastCards";
-import { AlertsPanel } from "./components/AlertsPanel";
+import { ChartCard } from "./components/ChartCard";
+import { ResultStrip } from "./components/ResultStrip";
+import { AlertsPage } from "./components/AlertsPage";
 import { Drawer, type DrawerTab } from "./components/Drawer";
 
 function useStored<T extends string | boolean | number>(key: string, init: T): [T, (v: T) => void] {
@@ -17,63 +18,87 @@ function useStored<T extends string | boolean | number>(key: string, init: T): [
   return [v, set];
 }
 
+const pageFromHash = (): PageId => {
+  const id = window.location.hash.replace(/^#\/?/, "") as PageId;
+  return PAGES.some((p) => p.id === id) ? id : "forecast";
+};
+const msg = (e: unknown) => (e instanceof Error ? e.message : "Something went wrong.");
+const fetchTarget = (t: ForecastTarget): Promise<TodayPayload | ForwardPayload> => (t === "next" ? api.today() : api.forward(t));
+
 export default function App() {
+  const [page, setPage] = useState<PageId>(pageFromHash);
   const [instrument, setInstrument] = useStored<InstrumentKey>("gold.instrument", "futures");
   const [range, setRange] = useStored<RangeKey>("gold.range", "1D");
   const [mode, setMode] = useStored<"line" | "candles">("gold.mode", "candles");
-  const [view, setView] = useState<ChartView>("history"); // always opens on price history
-  const [horizon, setHorizon] = useStored<Horizon>("gold.horizon", 5);
-  const [sel, setSel] = useState<"next" | "forward">("next"); // which forecast card is shown on the Forecast chart
+  const [target, setTarget] = useStored<ForecastTarget>("gold.target", 5);
+  const [shown, setShown] = useState<Shown | null>(null);          // the forecast on the chart: set ONLY by a Predict click
+  const [predicting, setPredicting] = useState(false);
+  const [predictErr, setPredictErr] = useState<string | null>(null);
+  const [fitToken, setFitToken] = useState(0);
   const [drawer, setDrawer] = useState<{ open: boolean; tab: DrawerTab }>({ open: false, tab: "model" });
   const [chartConn, setChartConn] = useState<Conn>("ok");
   const [dataRev, setDataRev] = useState(0);
 
+  useEffect(() => {
+    const on = () => setPage(pageFromHash());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  const goPage = (p: PageId) => { window.location.hash = `/${p}`; setPage(p); };
+
   const summary = usePoll(() => api.summary(instrument), instrument === "spot" ? 5000 : 15000, `summary:${instrument}:${dataRev}`);
-  const today = usePoll(api.today, 20000, `today:${dataRev}`);
-  const forward = usePoll(() => api.forward(horizon), 300000, `fwd:${horizon}:${dataRev}`);
   const conn: Conn = chartConn !== "ok" ? chartConn : summary.conn;
-  // The chart's target is always the selected card's: "next", or the forward card's current horizon. One source of truth, so they cannot disagree.
-  const target: ForecastTarget = sel === "next" ? "next" : horizon;
-  const fwdForChart = forward.data && forward.data.horizon === horizon ? forward.data : null;
-  const canShow = instrument === "futures";
-  const select = (which: "next" | "forward") => { if (!canShow) return; setSel(which); setView("forecast"); };
-  const onTarget = (t: ForecastTarget) => { if (t === "next") setSel("next"); else { setHorizon(t); setSel("forward"); } };
-  // Spot has no forecast view: leave it rather than silently showing futures on a spot screen.
-  const effView: ChartView = instrument === "spot" ? "history" : view;
+
+  // While a forecast is on the chart, quietly check whether a newer one exists. It is only ever offered, never swapped in.
+  const latest = usePoll(() => fetchTarget(shown!.target), 300000, `latest:${shown?.target}:${dataRev}`, !!shown);
+  const newerId = shown && latest.data?.forecast && latest.data.forecast.forecast_id !== shown.payload.forecast?.forecast_id ? latest.data.forecast.forecast_id : null;
+
+  const changeTarget = (t: ForecastTarget) => { if (t !== target) { setTarget(t); setShown(null); setPredictErr(null); } };   // a different question: the old answer leaves the chart
+  const changeInstrument = (i: InstrumentKey) => { setInstrument(i); if (i !== "futures") { setShown(null); setPredictErr(null); } };
+
+  const predict = async () => {
+    if (instrument !== "futures" || predicting) return;
+    setPredicting(true); setPredictErr(null);
+    try {
+      const p = await fetchTarget(target);
+      if (!p.forecast) { setShown(null); setPredictErr(p.message ?? "No forecast is available for this target yet."); return; }
+      // Predict fits the view to the forecast. Only if the current history range cannot show this target well is the range changed.
+      if (!(FIT_RANGES[String(target)] ?? []).includes(range)) setRange((DEFAULT_RANGE[String(target)] ?? "1M") as RangeKey);
+      setShown({ target, payload: p, fetchedAt: Date.now() });
+      setFitToken((n) => n + 1);
+    } catch (e) { setPredictErr(`Could not get the forecast: ${msg(e)}`); }
+    finally { setPredicting(false); }
+  };
+
+  const openDetails = (tab: DrawerTab = "model") => setDrawer({ open: true, tab });
 
   return (
     <div className="gx">
-      <Header instrument={instrument} onInstrument={setInstrument} summary={summary.data} conn={conn} onSettings={() => setDrawer({ open: true, tab: "model" })} />
-      <PriceSummary s={summary.data} err={summary.error} />
+      <Header page={page} onPage={goPage} summary={summary.data} conn={conn} onDetails={() => openDetails()} />
 
-      <section className="gx-fsection" aria-label="Gold futures forecasts" data-testid="forecast-section">
-        <div className="gx-fhead">
-          <h2>Gold futures forecasts</h2>
-          <span className="gx-chip">COMEX GC=F</span>
+      {page === "forecast" && (
+        <div className="gx-page" data-testid="page-forecast">
+          <div className="gx-seg gx-inst" role="tablist" aria-label="Instrument">
+            {(["spot", "futures"] as const).map((i) => (
+              <button key={i} role="tab" aria-selected={instrument === i} className={instrument === i ? "on" : ""} onClick={() => changeInstrument(i)} data-testid={`inst-${i}`}>
+                {i === "spot" ? "Spot gold" : "Gold futures"}
+              </button>
+            ))}
+          </div>
+          <PriceSummary s={summary.data} err={summary.error} />
+          <ChartCard instrument={instrument} summary={summary.data} range={range} onRange={setRange} mode={mode} onMode={setMode}
+            target={target} onTarget={changeTarget} shown={instrument === "futures" ? shown : null} onPredict={predict} predicting={predicting} predictErr={predictErr}
+            onHide={() => { setShown(null); setPredictErr(null); }} fitToken={fitToken} onFit={() => setFitToken((n) => n + 1)} onConn={setChartConn} conn={conn} />
+          {instrument === "futures" && <ResultStrip shown={shown} newerId={newerId} latestPrice={summary.data?.price ?? null} onDetails={() => openDetails()} />}
+          <button className="gx-link" onClick={() => openDetails()} data-testid="open-details-2">Details: model, methodology, drivers & backtests →</button>
         </div>
-        {instrument === "spot" && (
-          <p className="gx-fnote" data-testid="futures-note">
-            These forecasts are for <b>gold futures</b>, the instrument the models are trained and measured on. They have not been evaluated for spot gold and are not drawn on the spot chart.
-          </p>
-        )}
-        <div className="gx-cards">
-          <NextSettlementCard d={today.data} err={today.error} selected={effView === "forecast" && sel === "next"} onSelect={() => select("next")} canShow={canShow} onDetails={() => setDrawer({ open: true, tab: "model" })} />
-          <ForwardCard d={forward.data} err={forward.error} horizon={horizon} onHorizon={(h) => { setHorizon(h); if (effView === "forecast") setSel("forward"); }}
-            selected={effView === "forecast" && sel === "forward"} onSelect={() => select("forward")} canShow={canShow} onDetails={() => setDrawer({ open: true, tab: "model" })} />
-        </div>
-      </section>
+      )}
+      {page === "alerts" && <AlertsPage onDataChanged={() => setDataRev((n) => n + 1)} />}
 
-      <ChartPanel instrument={instrument} summary={summary.data} view={effView} onView={setView} range={range} onRange={setRange} mode={mode} onMode={setMode}
-        target={target} onTarget={onTarget} today={today.data} forward={fwdForChart} onConn={setChartConn} conn={conn} />
-
-      <AlertsPanel />
-
-      <button className="gx-link" onClick={() => setDrawer({ open: true, tab: "model" })} data-testid="open-details-2">Model details, methodology & data →</button>
       <footer className="gx-footer">
         For information only — not investment advice. Forecasts are statistical estimates; the price may differ. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts™</a>.
       </footer>
-
-      <Drawer today={today.data} forward={forward.data} open={drawer.open} tab={drawer.tab} onTab={(tab) => setDrawer({ open: true, tab })} onClose={() => setDrawer((d) => ({ ...d, open: false }))} onDataChanged={() => setDataRev((n) => n + 1)} />
+      <Drawer shown={instrument === "futures" ? shown : null} open={drawer.open} tab={drawer.tab} onTab={(tab) => setDrawer({ open: true, tab })} onClose={() => setDrawer((d) => ({ ...d, open: false }))} />
     </div>
   );
 }

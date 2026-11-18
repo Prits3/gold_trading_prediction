@@ -182,16 +182,17 @@ export interface CalibrationInfo {
 export interface ForecastResult { matured: boolean; actual: number | null; abs_error: number | null; in_range: boolean | null }
 export interface NextForecastInfo { state: "waiting_for_provider" | "issuing" | "scheduled"; message: string }
 export interface PendingSettlement { date: string; reason: string; close_seen?: number; settlement_price?: number }
+export interface ExperimentalForecast { forecast_id: string; algorithm: string; label: string; feature_schema: string; version: string; predicted: number; low: number | null; high: number | null }
 export interface TodayPayload {
   status: "current" | "completed" | "none"; message?: string; forecast?: FrozenForecast; result?: ForecastResult | null; market_open?: boolean;
   next_update_epoch?: number | null; pending_settlement?: PendingSettlement | null; calibration?: CalibrationInfo;
   live?: { price: number; as_of_epoch: number; delay_seconds: number; label: string; vs_forecast: number; vs_forecast_pct: number };
-  next_target?: { target_date: string; target_time: string };
+  next_target?: { target_date: string; target_time: string }; experimental?: ExperimentalForecast[];
   last_result?: { target_date: string; predicted: number; actual: number | null; abs_error: number | null; in_range: boolean | null; status: "scored" | "awaiting_official_figure" };
 }
 export interface ForwardPayload {
   status: "current" | "completed" | "none"; horizon: Horizon; message?: string; forecast?: FrozenForecast; result?: ForecastResult | null; base_date?: string;
-  calibration?: CalibrationInfo; next_forecast?: NextForecastInfo;
+  calibration?: CalibrationInfo; next_forecast?: NextForecastInfo; experimental?: ExperimentalForecast[];
   evaluation?: { development: DevMetrics | null; forward: ForwardStats };
 }
 

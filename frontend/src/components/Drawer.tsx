@@ -3,17 +3,17 @@ import { api, ApiError } from "../api";
 import { usePoll } from "../hooks";
 import type { DriversPanel, ForwardPayload, FrozenForecast, Horizon, LearningPayload, NewsPayload, Prediction, PricePayload, TaskStatus, TodayPayload } from "../types";
 import { etDate, fmtAgo, fmtEt, num, signed, timeBoth } from "../format";
-import { baseDate } from "./ForecastCards";
+import { baseDate, type Shown } from "../forecastText";
 import { Backtest } from "./Backtest";
 import { GldComparison } from "./GldComparison";
 import { MarketContext } from "./MarketContext";
 import { Methodology } from "./Methodology";
 import { ErrorBlock, Info, Skeleton } from "./Common";
 
-export type DrawerTab = "model" | "drivers" | "backtest" | "news" | "method" | "gld" | "data";
+export type DrawerTab = "model" | "drivers" | "backtest" | "news" | "method" | "gld";
 const TABS: { id: DrawerTab; label: string }[] = [
   { id: "model", label: "Model" }, { id: "drivers", label: "Market drivers" }, { id: "backtest", label: "Backtest" },
-  { id: "news", label: "News" }, { id: "method", label: "Method" }, { id: "gld", label: "GLD" }, { id: "data", label: "Data & settings" },
+  { id: "news", label: "News" }, { id: "method", label: "Method" }, { id: "gld", label: "GLD" },
 ];
 const TASK_NAME: Record<string, string> = { nowcast: "Today's settlement", fwd_1: "1-session forecast", fwd_5: "5-session forecast", fwd_20: "20-session forecast" };
 const when = (t: number | null | undefined) => (t ? `${fmtEt(t, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false })} ET` : "never");
@@ -59,7 +59,7 @@ function ShownForecast({ title, f, referenceNote, cal }: { title: string; f: Fro
   );
 }
 
-function ModelTab({ today, forward }: { today: TodayPayload | null; forward: ForwardPayload | null }) {
+function ModelTab({ shown }: { shown: Shown | null }) {
   const { data, error, refresh } = usePoll<LearningPayload>(api.learning, 30000, "learning");
   if (!data) return error ? <ErrorBlock title="Could not load model details" message={error} onRetry={refresh} /> : <Skeleton h={240} />;
   const w = data.worker;
@@ -75,9 +75,10 @@ function ModelTab({ today, forward }: { today: TodayPayload | null; forward: For
         </dl>
       </section>
       <section data-testid="shown-forecasts">
-        <h3>Forecasts shown on the cards</h3>
-        <ShownForecast title="Next settlement" f={today?.forecast} cal={today?.calibration} referenceNote="latest futures price at issue" />
-        <ShownForecast title={`${forward?.horizon ?? ""}-session forecast`} f={forward?.forecast} cal={forward?.calibration} referenceNote={`official settlement of ${baseDate(forward?.base_date)}`} />
+        <h3>Forecast on the chart</h3>
+        {!shown ? <p className="gx-muted">No forecast is displayed. Press Predict on the Forecast page.</p> : shown.target === "next"
+          ? <ShownForecast title="Next settlement" f={(shown.payload as TodayPayload).forecast} cal={(shown.payload as TodayPayload).calibration} referenceNote="latest futures price at issue" />
+          : <ShownForecast title={`${shown.target}-session forecast`} f={(shown.payload as ForwardPayload).forecast} cal={(shown.payload as ForwardPayload).calibration} referenceNote={`official settlement of ${baseDate((shown.payload as ForwardPayload).base_date)}`} />}
       </section>
       <section>
         <h3>Current model per forecast</h3>
@@ -211,7 +212,7 @@ function NewsTab() {
   return <MarketContext news={news} loading={loading} error={err} onRetry={() => load(true)} />;
 }
 
-function DataTab({ onChanged }: { onChanged: () => void }) {
+export function DataSettings({ onChanged }: { onChanged: () => void }) {
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const file = useRef<HTMLInputElement>(null);
@@ -252,7 +253,7 @@ function DataTab({ onChanged }: { onChanged: () => void }) {
 }
 
 // ------------------------------------------------------------------------------------------------ Drawer
-export function Drawer({ today, forward, open, tab, onTab, onClose, onDataChanged }: { today: TodayPayload | null; forward: ForwardPayload | null; open: boolean; tab: DrawerTab; onTab: (t: DrawerTab) => void; onClose: () => void; onDataChanged: () => void }) {
+export function Drawer({ shown, open, tab, onTab, onClose }: { shown: Shown | null; open: boolean; tab: DrawerTab; onTab: (t: DrawerTab) => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -265,22 +266,21 @@ export function Drawer({ today, forward, open, tab, onTab, onClose, onDataChange
   return (
     <div className="gx-drawer-wrap" data-testid="drawer">
       <div className="gx-backdrop" onClick={onClose} aria-hidden="true" />
-      <aside className="gx-drawer" role="dialog" aria-modal="true" aria-label="Model details" ref={ref} tabIndex={-1}>
+      <aside className="gx-drawer" role="dialog" aria-modal="true" aria-label="Details and settings" ref={ref} tabIndex={-1}>
         <div className="gx-drawer-head">
-          <h2>Model details</h2>
+          <h2>Details</h2>
           <button className="gx-icon" onClick={onClose} aria-label="Close">×</button>
         </div>
         <div className="gx-tabs" role="tablist">
           {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)} data-testid={`dtab-${t.id}`}>{t.label}</button>)}
         </div>
         <div className="gx-drawer-body">
-          {tab === "model" && <ModelTab today={today} forward={forward} />}
+          {tab === "model" && <ModelTab shown={shown} />}
           {tab === "drivers" && <DriversTab />}
           {tab === "backtest" && <BacktestTab />}
           {tab === "news" && <NewsTab />}
           {tab === "method" && <MethodTab />}
           {tab === "gld" && <GldComparison />}
-          {tab === "data" && <DataTab onChanged={onDataChanged} />}
         </div>
       </aside>
     </div>

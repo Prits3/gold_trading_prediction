@@ -49,5 +49,6 @@ export const api = {
   alerts: () => request<AlertsPayload>("/api/alerts"),
   saveAlerts: (patch: Partial<AlertSettings>) => request<AlertsPayload>("/api/alerts/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }),
   alertsBasis: () => request<BasisCheck>("/api/alerts/basis"),
+  exportForecastUrl: (forecastId: string) => `/api/forecast/export?forecast_id=${encodeURIComponent(forecastId)}`,
   downloadUrl: (h: Horizon, key: string) => `/api/predict/download?horizon=${h}&key=${encodeURIComponent(key)}`,
 };

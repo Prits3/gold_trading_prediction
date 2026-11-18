@@ -20,13 +20,15 @@ async function session(viewport, label) {
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
   page.on("response", (r) => { if (r.url().includes("/api/") && r.status() >= 500) bad.push(`${r.status()} ${r.url().replace(URL, "")}`); });
   await page.goto(URL);
+  await page.waitForSelector('[data-testid="predict"]', { timeout: 40000 });
+  const onForecast = await page.locator('[data-testid="alerts-panel"]').count();
+  await page.click('[data-testid="nav-alerts"]');
   await page.waitForSelector('[data-testid="alerts-panel"] [data-testid="sw-forecast"]', { state: "attached", timeout: 40000 });
   await page.waitForTimeout(1500);
   const panel = page.locator('[data-testid="alerts-panel"]');
   await panel.scrollIntoViewIfNeeded();
 
-  const order = await page.evaluate(() => ["chart", "alerts-panel"].map((id) => document.querySelector(`[data-testid="${id}"]`).getBoundingClientRect().top));
-  check(`${label}: Alerts panel sits below the chart`, order[0] < order[1], order.map(Math.round).join(" < "));
+  check(`${label}: the Alerts panel lives on the Alerts & settings page, not on the Forecast page`, onForecast === 0 && (await page.locator('[data-testid="page-alerts"]').count()) === 1 && /alerts$/.test(page.url()));
   const txt = await panel.textContent();
   check(`${label}: both alert types are separate switches with plain wording`, /Forecast heads-up/.test(txt) && /Actual-price crossing/.test(txt) && /Not a touch of the level/.test(txt) && /observed futures quote/.test(txt));
   const lv = await T(page, "levels");

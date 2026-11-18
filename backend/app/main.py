@@ -330,6 +330,15 @@ def _pending(ds) -> dict | None:
     return ds.meta.get("pending_settlement")
 
 
+def _experimental(f: dict) -> list[dict]:
+    """Shadow (non-production) forecasts for exactly the same target and base as ``f``: recorded before the outcome, not in control of anything."""
+    rows = db.rows("SELECT * FROM forecasts WHERE task=? AND role='shadow' AND target_date=? AND base_time=? ORDER BY algorithm, feature_schema",
+                   (f["task"], f["target_date"], f["base_time"]))
+    return [{"forecast_id": r["id"], "algorithm": r["algorithm"], "label": ALGO_LABEL.get(r["algorithm"], r["algorithm"]), "feature_schema": r["feature_schema"],
+             "version": r["model_version"], "predicted": round(r["predicted"], 2), "low": None if r["low"] is None else round(r["low"], 2),
+             "high": None if r["high"] is None else round(r["high"], 2)} for r in rows]
+
+
 @app.get("/api/forecast/today")
 def forecast_today():
     """The next-settlement forecast exactly as issued (frozen), a separately labelled live comparison, and the previous result."""
@@ -358,7 +367,8 @@ def forecast_today():
     now = time.time()
     completed = pd.Timestamp(f["target_time"]).timestamp() <= now
     out = {"status": "completed" if completed else "current", "forecast": _frozen(f, 1.0), "result": _result(f) if completed else None,
-           "market_open": bool(n and n["market_open"]), "next_update_epoch": _next_hour_epoch(now) if n and n["market_open"] else None, "pending_settlement": _pending(ds)}
+           "market_open": bool(n and n["market_open"]), "next_update_epoch": _next_hour_epoch(now) if n and n["market_open"] else None, "pending_settlement": _pending(ds),
+           "experimental": _experimental(f)}
     if n:
         live = n["anchor_price"]
         out["live"] = {"price": live, "as_of_epoch": n["anchor_time_epoch"], "delay_seconds": n["anchor_delay_seconds"], "label": "Latest futures quote",
@@ -414,7 +424,7 @@ def forecast_forward(horizon: int = 5):
     now = time.time()
     completed = pd.Timestamp(f["target_time"]).timestamp() <= now
     out = {"status": "completed" if completed else "current", "horizon": h, "forecast": _frozen(f, float(h)), "result": _result(f) if completed else None,
-           "base_date": f["base_time"], "calibration": learning.calibration_summary(task, f["base_price"]),
+           "base_date": f["base_time"], "calibration": learning.calibration_summary(task, f["base_price"]), "experimental": _experimental(f),
            "evaluation": {"development": learning.status_payload()["tasks"][task]["development"], "forward": learning.status_payload()["tasks"][task]["forward"]}}
     newer_session = f["base_time"] != base_date  # a completed session exists that this forecast does not know about
     pend = _pending(ds)
@@ -427,6 +437,31 @@ def forecast_forward(horizon: int = 5):
         else:
             out["next_forecast"] = {"state": "scheduled", "message": "The next forecast is issued after the next session completes."}
     return out
+
+
+FC_EXPORT_COLUMNS = ["forecast_id", "instrument", "forecast_type", "horizon_sessions", "source", "model_version", "role", "reference_price_usd", "predicted_price_usd",
+                     "change_usd", "change_pct", "range_level_pct", "range_low_usd", "range_high_usd", "target_date", "target_time_new_york", "issued_at_utc",
+                     "input_cutoff_utc", "actual_usd", "inside_range"]
+
+
+@app.get("/api/forecast/export")
+def export_forecast(forecast_id: str):
+    """CSV of one stored forecast. Built from the same frozen record the screen shows (same rounding), so a download can never disagree with the display."""
+    r = db.rows("SELECT * FROM forecasts WHERE id=?", (forecast_id,))
+    if not r:
+        raise _err(404, "unknown_forecast", "No stored forecast has that id. Run Predict again, then export.")
+    f = r[0]
+    fr = _frozen(f, 1.0 if f["task"] == "nowcast" else float(f["horizon"] or 1))
+    res = _result(f)
+    iso = lambda t: datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds")  # noqa: E731
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(FC_EXPORT_COLUMNS)
+    w.writerow([f["id"], "COMEX gold futures (GC=F), USD per troy ounce", "next settlement" if f["task"] == "nowcast" else "forward", f["horizon"] or "",
+                fr["source"]["label"], f["model_version"], f["role"], f"{fr['reference_price']:.2f}", f"{fr['predicted']:.2f}", f"{fr['change']:.2f}", f"{fr['change_pct']:.2f}",
+                round(fr["level"] * 100), f"{fr['low']:.2f}", f"{fr['high']:.2f}", f["target_date"], f["target_time"], iso(f["issued_at"]), iso(f["input_cutoff"]),
+                "" if res["actual"] is None else f"{res['actual']:.2f}", "" if res["in_range"] is None else int(res["in_range"])])
+    return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="gold-forecast-{f["task"]}-{f["target_date"]}.csv"'})
 
 
 @app.get("/api/learning")
