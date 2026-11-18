@@ -75,13 +75,21 @@ def render(ctx: dict) -> str:
         parts.append("<p class='warn'>No quote is available.</p>")
     parts.append("</div><h2>Your position and review levels</h2><div class='card'><dl>")
     entry = cfg.get("entry_price")
-    parts.append(_row("Entry price", (escape(alerts.usd(entry)) + " <span class='muted'>(as entered; instrument not verified)</span>") if entry else "not set"))
+    pos = alerts.position_info(cfg)
+    if alerts.position_open(cfg):
+        parts.append(_row("Entry price", (escape(alerts.usd(entry)) + " <span class='muted'>(as entered; instrument not verified)</span>") if entry else "not set"))
+    else:
+        parts.append(_row("Tracked position", "Closed (unconfirmed)<br><span class='muted'>" + escape(pos["note"]) + "</span>"))
+        if entry:
+            parts.append(_row("Last entry recorded", escape(alerts.usd(entry)) + " <span class='muted'>(history; not reconciled)</span>"))
+        if pos["exit_price"]:
+            parts.append(_row("Exit price (you entered)", escape(alerts.usd(pos["exit_price"]))))
     if cfg.get("position_size"):
         parts.append(_row("Position size", escape(str(cfg["position_size"]))))
     for lv in cfg["levels"]:
-        note = alerts.below_entry_note(lv, entry)
+        note = alerts.below_entry_note(lv, alerts.entry_for_notes(cfg))
         parts.append(_row("Review level", escape(alerts.lvl(lv)) + (f" <span class='tag'>{escape(note)}</span>" if note else "")))
-    if q and entry:
+    if q and entry and alerts.position_open(cfg):
         d = q["price"] - entry
         parts.append(_row("Quote vs entry", f"{d:+,.2f} USD per troy ounce <span class='muted'>(a price difference, not profit)</span>"))
     parts.append("</dl><p class='muted'>Profit is not calculated: it needs your position size and your broker's costs.</p></div>")

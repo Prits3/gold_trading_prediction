@@ -27,6 +27,7 @@ from sklearn.preprocessing import StandardScaler
 
 from . import db, drivers, ledger, nowcast, registry
 from . import research_drivers as rd
+from .feature_groups import FIB_FEATURES, FIB_LEVELS, FIB_WINDOWS, PATTERN_FEATURES
 from .features import FEATURE_NAMES
 from .model import target_date as session_target_date
 
@@ -68,6 +69,10 @@ def cols_for(schema: str) -> list[str]:
         return list(FEATURE_NAMES)
     if schema == "drivers_v1":
         return list(FEATURE_NAMES) + ["d_" + c for c in drivers.ALL_DRIVER_FEATURES]
+    if schema == "patterns_v1":
+        return list(FEATURE_NAMES) + list(PATTERN_FEATURES)
+    if schema == "fib_v1":
+        return list(FEATURE_NAMES) + list(PATTERN_FEATURES) + list(FIB_FEATURES)
     raise ValueError(schema)
 
 
@@ -138,11 +143,19 @@ def fit_forecast(ds: dict, cols: list[str], algo: str, h: int) -> tuple[float, f
     return mu, mu + float(lo) * scale_now, mu + float(hi) * scale_now
 
 
+def log_attempt(task: str, version: str, stage: str, status: str, data_through: str | None, started: float, detail: str | None = None) -> None:
+    """Every candidate attempt is kept, including failures. This table is append-only and is never used to hide a bad result."""
+    db.connect().execute("INSERT INTO training_attempts (at,task,version,stage,status,data_through,duration_s,detail) VALUES (?,?,?,?,?,?,?,?)",
+                         (time.time(), task, version, stage, status, data_through, round(time.time() - started, 2), (detail or "")[:400] or None))
+
+
 def issue_forward(close: pd.Series, drivers_df: pd.DataFrame | None, data_key: str, now: float | None = None) -> dict:
     now = now or time.time()
     base_date = close.index[-1]
     base_price = float(close.iloc[-1])
-    out = {"issued": 0, "skipped": []}
+    dhash = ledger.dataset_hash(close, drivers_df)
+    through = base_date.date().isoformat()
+    out = {"issued": 0, "skipped": [], "dataset_hash": dhash}
     for h in (1, 5, 20):
         task = f"fwd_{h}"
         tdate = session_target_date(base_date, h)
@@ -160,16 +173,22 @@ def issue_forward(close: pd.Series, drivers_df: pd.DataFrame | None, data_key: s
         champ = registry.champion(task)["version"]
         for v in registry.versions(task):
             algo, schema = v["algorithm"], v["feature_schema"]
+            t0 = time.time()
             try:
-                mu, lo, hi = fit_forecast(ds, cols_for(schema) if algo != "unchanged" else [], algo, h)
+                cols = cols_for(schema) if algo != "unchanged" else []
+                if cols and not ds["x_now"][cols].notna().all():
+                    raise ValueError("latest inputs incomplete for this feature group")
+                mu, lo, hi = fit_forecast(ds, cols, algo, h)
             except Exception as exc:  # noqa: BLE001 - one failing candidate must not block the others
                 out["skipped"].append(f"{v['version']}: {exc.__class__.__name__}")
+                log_attempt(task, v["version"], "forecast_fit", "failed", through, t0, f"{exc.__class__.__name__}: {exc}")
                 continue
+            log_attempt(task, v["version"], "forecast_fit", "ok", through, t0)
             role = "champion" if v["version"] == champ else ("baseline" if algo == "unchanged" else "shadow")
             if ledger.issue(task=task, role=role, version=v["version"], algorithm=algo, feature_schema=schema, input_cutoff=_origin_epoch(base_date),
                             base_price=base_price, base_time=base_date.date().isoformat(), target_date=tdate, target_time=_target_time(tdate),
                             predicted=base_price * float(np.exp(mu)), low=base_price * float(np.exp(lo)), high=base_price * float(np.exp(hi)),
-                            level=LEVEL, horizon=h, data_key=data_key, issued_at=now):
+                            level=LEVEL, horizon=h, data_key=data_key, issued_at=now, dataset_hash=dhash):
                 out["issued"] += 1
             registry.mark_trained(v["version"], base_date.date().isoformat())
     return out
@@ -182,9 +201,32 @@ def _thirds(loss_m, loss_b):
     return [float(loss_m[t].mean() / loss_b[t].mean() - 1) * 100 for t in np.array_split(np.arange(len(loss_m)), 3)]
 
 
+FIB_MIN_ORIGINS = 300          # a horizon with fewer identical origins than this cannot support or reject a feature group
+FIB_MIN_HORIZONS = 2           # the same algorithm must beat the no-Fibonacci version, with its 90% interval entirely below zero, at this many horizons
+SERIES_KEEP = 160              # origins of walk-forward predicted-vs-actual kept for the Learning page (development evidence, shown as such)
+
+
+def _paired(ds: dict, runs: dict, a: str, b: str, common: np.ndarray, h: int) -> dict | None:
+    """Loss of ``a`` minus loss of ``b`` on identical origins and outcomes, as a share of the unchanged-price error, with a block-bootstrap 90% interval."""
+    if a not in runs or b not in runs:
+        return None
+    p0, ph = ds["p0"][common], ds["ph"][common]
+    la = np.abs(p0 * np.exp(runs[a]["pred"][common]) - ph)
+    lb = np.abs(p0 * np.exp(runs[b]["pred"][common]) - ph)
+    base = float(np.abs(p0 - ph).mean())
+    d = la - lb
+    lo, hi = rd._block_bootstrap_ci(d, block=max(h, 10), reps=1000)
+    return {"a": a, "b": b, "n_origins": int(common.sum()), "delta_pct_of_baseline_mae": float(d.mean() / base * 100), "ci90": [float(lo / base * 100), float(hi / base * 100)],
+            "a_vs_unchanged_pct": float((la.mean() / base - 1) * 100), "b_vs_unchanged_pct": float((lb.mean() / base - 1) * 100)}
+
+
 def dev_evaluate_forward(close: pd.Series, drivers_df: pd.DataFrame, data_through: str) -> dict[str, dict]:
-    """Walk-forward development metrics for every forward candidate, on identical origins per horizon."""
+    """Walk-forward development metrics for every forward candidate, on identical origins per horizon.
+
+    A candidate that fails is logged (``training_attempts``) and skipped; the others are unaffected. The special key ``_feature_eval``
+    carries the paired with/without comparisons used by ``fib_verdict`` (it is removed by ``run_learning`` before the promotion gates)."""
     results: dict[str, dict] = {}
+    feature_eval: dict[str, dict] = {}
     for h in (1, 5, 20):
         task = f"fwd_{h}"
         ds = rd.build_dataset(close, h, drivers_df)
@@ -192,10 +234,19 @@ def dev_evaluate_forward(close: pd.Series, drivers_df: pd.DataFrame, data_throug
         for v in registry.versions(task):
             if v["algorithm"] == "unchanged":
                 continue
-            runs[v["version"]] = rd.walk_forward(ds, cols_for(v["feature_schema"]), v["algorithm"], h)
+            t0 = time.time()
+            try:
+                runs[v["version"]] = rd.walk_forward(ds, cols_for(v["feature_schema"]), v["algorithm"], h)
+            except Exception as exc:  # noqa: BLE001 - recorded, and the other candidates still get evaluated
+                log_attempt(task, v["version"], "dev_eval", "failed", data_through, t0, f"{exc.__class__.__name__}: {exc}")
+                continue
+            log_attempt(task, v["version"], "dev_eval", "ok", data_through, t0)
+        if not runs:
+            continue
         common = np.logical_and.reduce([r["ok"] for r in runs.values()])
         p0, ph, y = ds["p0"][common], ds["ph"][common], ds["y"][common]
         loss_b = np.abs(p0 - ph)
+        champ = registry.champion(task)["version"]
         for version, wf in runs.items():
             loss_m = np.abs(p0 * np.exp(wf["pred"][common]) - ph)
             lo, hi = wf["lo"][common], wf["hi"][common]
@@ -212,7 +263,53 @@ def dev_evaluate_forward(close: pd.Series, drivers_df: pd.DataFrame, data_throug
                 "direction_pct": float(np.mean(np.sign(wf["pred"][common][y != 0]) == np.sign(y[y != 0])) * 100),
                 "loss": loss_m.tolist(),  # kept in memory for incumbent comparison; stripped before storing
             }
+            if version == champ:
+                k = slice(-SERIES_KEEP, None)
+                dates = [d.date().isoformat() for d in ds["dates"][common]][k]
+                results[version]["series"] = {"dates": dates, "base": [round(float(x), 2) for x in p0[k]], "actual": [round(float(x), 2) for x in ph[k]],
+                                              "pred": [round(float(x), 2) for x in (p0 * np.exp(wf["pred"][common]))[k]],
+                                              "low": [round(float(x), 2) for x in (p0 * np.exp(lo))[k]], "high": [round(float(x), 2) for x in (p0 * np.exp(hi))[k]]}
+        for algo in registry.PATTERN_ALGOS:     # identical models, identical origins and outcomes: with vs without each addition
+            g, p_, f_ = f"fwd_{h}:{algo}:gold_v1", f"fwd_{h}:{algo}:patterns_v1", f"fwd_{h}:{algo}:fib_v1"
+            for name, (x, y_) in {"fib_vs_patterns": (f_, p_), "patterns_vs_gold": (p_, g), "fib_vs_gold": (f_, g)}.items():
+                t0 = time.time()
+                try:
+                    r = _paired(ds, runs, x, y_, common, h)
+                except Exception as exc:  # noqa: BLE001
+                    log_attempt(task, x, "feature_group", "failed", data_through, t0, f"{name}: {exc.__class__.__name__}: {exc}")
+                    continue
+                if r:
+                    feature_eval.setdefault(name, {}).setdefault(str(h), {})[algo] = r
+    results["_feature_eval"] = feature_eval  # type: ignore[assignment]
     return results
+
+
+def fib_verdict(feature_eval: dict) -> dict:
+    """The pre-set rule for keeping the EXPERIMENTAL Fibonacci group. Fixed before looking at any result; not tuned afterwards.
+
+    supported      the same algorithm beats the identical model without Fibonacci, with the paired 90% interval entirely below zero, at
+                   >= 2 horizons, AND at no horizon is any algorithm reliably WORSE with it.
+    not_supported  enough origins were compared and that is not the case: the fib candidates are rejected (history kept, no new forecasts).
+    insufficient   too few identical origins at too many horizons to decide either way: nothing changes."""
+    comp = (feature_eval or {}).get("fib_vs_patterns") or {}
+    rows = [(h, algo, r) for h, per in comp.items() for algo, r in per.items() if r["n_origins"] >= FIB_MIN_ORIGINS]
+    if len({h for h, _, _ in rows}) < FIB_MIN_HORIZONS:
+        return {"status": "insufficient", "reason": f"fewer than {FIB_MIN_HORIZONS} horizons had {FIB_MIN_ORIGINS}+ identical origins", "rule": fib_rule_text()}
+    wins = {}
+    for h, algo, r in rows:
+        if r["ci90"][1] < 0:
+            wins.setdefault(algo, []).append(h)
+    worse = [(h, algo) for h, algo, r in rows if r["ci90"][0] > 0]
+    ok = any(len(hs) >= FIB_MIN_HORIZONS for hs in wins.values()) and not worse
+    reason = ("The Fibonacci group reliably improved the same model at " + ", ".join(f"{a}: horizons {hs}" for a, hs in wins.items() if len(hs) >= FIB_MIN_HORIZONS) + "."
+              if ok else "No algorithm beat its no-Fibonacci twin with a 90% interval entirely below zero at "
+                         f"{FIB_MIN_HORIZONS}+ horizons" + (f"; reliably worse with it at {worse}." if worse else "."))
+    return {"status": "supported" if ok else "not_supported", "reason": reason, "wins": wins, "worse": worse, "rule": fib_rule_text()}
+
+
+def fib_rule_text() -> str:
+    return (f"Kept only if, for the same algorithm on identical origins, adding Fibonacci cuts the error with a paired 90% block-bootstrap interval entirely below zero "
+            f"at {FIB_MIN_HORIZONS}+ of 3 horizons and never reliably worsens it. Windows {list(FIB_WINDOWS)} and levels {list(FIB_LEVELS)} were fixed in advance.")
 
 
 def dev_evaluate_nowcast(daily: pd.Series, data_through: str) -> dict[str, dict]:
@@ -336,32 +433,62 @@ def _store_dev(data_through: str, dev: dict[str, dict]) -> None:
     now = time.time()
     with db.tx() as c:
         for v, m in dev.items():
-            slim = {k: x for k, x in m.items() if k != "loss"}
-            c.execute("INSERT OR REPLACE INTO dev_evals VALUES (?,?,?,?,?)", (data_through, m["task"], v, now, __import__("json").dumps(slim)))
+            slim = {k: x for k, x in m.items() if k not in ("loss", "series")}
+            c.execute("INSERT OR REPLACE INTO dev_evals VALUES (?,?,?,?,?)", (data_through, m["task"], v, now, json.dumps(slim)))
+            if m.get("series"):
+                c.execute("INSERT OR REPLACE INTO dev_series VALUES (?,?,?,?)", (data_through, m["task"], v, json.dumps(m["series"])))
+
+
+def _apply_fib_verdict(data_through: str, feature_eval: dict) -> dict:
+    """Record the paired comparisons and apply the pre-set Fibonacci rule (reject / restore / leave alone)."""
+    verdict = fib_verdict(feature_eval)
+    db.connect().execute("INSERT OR REPLACE INTO feature_evals VALUES (?,?,?,?)", (data_through, "fib_v1", time.time(), json.dumps({"verdict": verdict, "comparisons": feature_eval}, default=float)))
+    if verdict["status"] == "not_supported":
+        verdict["rejected"] = registry.reject_schema("fib_v1", "Fibonacci group not supported by the pre-set paired test: " + verdict["reason"], {"feature_eval": verdict})
+    elif verdict["status"] == "supported":
+        verdict["restored"] = registry.restore_schema("fib_v1")
+    return verdict
 
 
 def run_learning(close: pd.Series, drivers_df: pd.DataFrame | None, data_key: str, force: bool = False) -> dict:
-    """One full learning pass for fresh completed-session data. Failures leave the champion untouched."""
+    """score -> build features -> train/evaluate candidates -> record the decision -> publish forecasts, for fresh completed-session data.
+
+    Failures leave the champion untouched, and publishing happens last and regardless, so a failed evaluation never leaves the app without a
+    forecast for a new session (the forecasts then simply come from the unchanged champion)."""
     registry.seed()
     data_through = close.index[-1].date().isoformat()
     summary: dict = {"data_through": data_through, "matured": ledger.mature(close), "errors": {}}
-    summary["forward_issue"] = issue_forward(close, drivers_df, data_key)
     if force:
         db.connect().execute("DELETE FROM dev_evals WHERE data_through=?", (data_through,))  # dev_evals is a cache, not the ledger
-    done = db.rows("SELECT 1 FROM dev_evals WHERE data_through=? LIMIT 1", (data_through,))
-    if done:
+    # "Done" means every live candidate was evaluated (or its attempt was recorded as failed) for this data: a candidate added later is not skipped.
+    live = {v["version"] for t in registry.TASKS for v in registry.versions(t) if v["algorithm"] != "unchanged"}
+    seen = {r["version"] for r in db.rows("SELECT version FROM dev_evals WHERE data_through=?", (data_through,))} | \
+           {r["version"] for r in db.rows("SELECT version FROM training_attempts WHERE data_through=? AND stage='dev_eval'", (data_through,))}
+    if live <= seen:
         summary["development"] = "already evaluated for this data"
-        return summary
-    dev: dict[str, dict] = {}
-    for name, fn in (("forward", lambda: dev_evaluate_forward(close, drivers_df, data_through) if drivers_df is not None else {}),
-                     ("nowcast", lambda: dev_evaluate_nowcast(close, data_through))):
-        try:
-            dev.update(fn())
-        except Exception as exc:  # noqa: BLE001 - a failed evaluation must never disturb the champion
-            summary["errors"][name] = f"{exc.__class__.__name__}: {exc}"
-    if dev:
-        _store_dev(data_through, dev)
-        summary["decisions"] = [decide(t, dev) for t in registry.TASKS if any(m["task"] == t for m in dev.values())]
+    else:
+        dev: dict[str, dict] = {}
+        feature_eval: dict = {}
+        for name, fn in (("forward", lambda: dev_evaluate_forward(close, drivers_df, data_through) if drivers_df is not None else {}),
+                         ("nowcast", lambda: dev_evaluate_nowcast(close, data_through))):
+            try:
+                got = fn()
+                feature_eval = got.pop("_feature_eval", feature_eval) or feature_eval
+                dev.update(got)
+            except Exception as exc:  # noqa: BLE001 - a failed evaluation must never disturb the champion
+                summary["errors"][name] = f"{exc.__class__.__name__}: {exc}"
+                log_attempt(name, "*", "dev_eval", "failed", data_through, time.time(), f"{exc.__class__.__name__}: {exc}")
+        if dev:
+            _store_dev(data_through, dev)
+            if feature_eval:
+                summary["fibonacci"] = _apply_fib_verdict(data_through, feature_eval)
+            live = {v for t in registry.TASKS for v in (x["version"] for x in registry.versions(t))}
+            gated = {v: m for v, m in dev.items() if v in live}        # rejected groups cannot be promoted or dilute the correction
+            summary["decisions"] = [decide(t, gated) for t in registry.TASKS if any(m["task"] == t for m in gated.values())]
+    try:
+        summary["forward_issue"] = issue_forward(close, drivers_df, data_key)
+    except Exception as exc:  # noqa: BLE001
+        summary["errors"]["publish"] = f"{exc.__class__.__name__}: {exc}"
     return summary
 
 

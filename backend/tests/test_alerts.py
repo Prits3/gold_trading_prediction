@@ -74,6 +74,7 @@ def test_headsup_fires_for_each_level_the_forecast_reaches():
 
 
 def test_headsup_only_for_levels_reached_and_never_below():
+    alerts.save_settings({"position_status": "open"}, NOW)
     fc(4050)
     alerts.check_forecasts(NOW)
     assert [e["threshold"] for e in events()] == [4000.0]
@@ -377,6 +378,7 @@ def test_snapshot_push_is_idempotent_and_records_failures(monkeypatch):
 
 # ------------------------------------------------------------------------------------------------------ review page
 def test_review_page_content_and_auth():
+    alerts.save_settings({"position_status": "open"}, NOW)
     fc(4050)
     alerts.check_price(NOW, quote=quote(4101))
     token, exp = review.mint_token(24, "price_crossing", now=NOW)
@@ -410,6 +412,7 @@ def test_no_money_value_is_computed_without_position_size_and_costs():
 
 # ------------------------------------------------------------------------------------------------------ basis verification
 def test_basis_check_states_instrument_currency_unit_and_flags_the_entry():
+    alerts.save_settings({"position_status": "open"}, NOW)
     b = alerts.verify_basis(NOW, quotes={"futures": quote(3850), "spot": quote(3862, basis="spot")})
     assert b["levels_apply_to"]["currency"] == "USD" and "troy ounce" in b["levels_apply_to"]["unit"] and "GC=F" in b["levels_apply_to"]["instrument"]
     assert b["entry_price"]["verified"] is False
@@ -449,6 +452,7 @@ def client():
 
 
 def test_api_alerts_panel_and_settings_roundtrip(client):
+    assert client.put("/api/alerts/settings", json={"position_status": "open"}).status_code == 200
     j = client.get("/api/alerts").json()
     assert j["settings"]["levels"] == [4000.0, 4100.0]
     assert [(x["level"], x["note"]) for x in j["levels"]] == [(4000.0, "Below entry price"), (4100.0, "Above entry price")]
@@ -474,3 +478,55 @@ def test_api_review_page_requires_a_valid_token(client):
 def test_api_morning_preview_reports_unavailable_rather_than_inventing(client):
     j = client.get("/api/alerts/morning-preview").json()
     assert j["status"] == "unavailable" and j["fresh"] is False and "no forecast is available" in j["text"]
+
+
+# ------------------------------------------------------------------------------------------------------------- the tracked position is closed (unconfirmed)
+def test_the_tracked_position_defaults_to_closed_unconfirmed_and_invents_nothing():
+    cfg = alerts.get_settings()
+    info = alerts.position_info(cfg)
+    assert cfg["position_status"] == "closed_unconfirmed" and info["exit_price"] is None and info["closed_at"] is None and info["closure_reason"] is None
+    assert "NOT recorded" in info["note"] and "nothing is assumed" in info["note"]
+    assert alerts.entry_for_notes(cfg) is None and alerts.below_entry_note(4000.0, alerts.entry_for_notes(cfg)) is None   # no entry comparison for a closed position
+
+
+def test_closed_position_alerts_are_price_level_notices_not_calls_to_review_a_position():
+    fc(4050)
+    alerts.check_forecasts(NOW)
+    ev = events()[0]
+    assert ev["payload"]["below_entry"] is None
+    assert "Review your position" not in ev["message"] and "closed (unconfirmed)" in ev["message"] and "no response means no trade" in ev["message"].lower()
+    alerts.check_price(NOW, quote=quote(4101))
+    pm = [e for e in events() if e["alert_type"] == "price_crossing"][0]["message"]
+    assert "Review your position" not in pm and "closed (unconfirmed)" in pm
+
+
+def test_review_page_for_a_closed_position_shows_no_entry_comparison_and_no_invented_figures():
+    fc(4050)
+    alerts.check_price(NOW, quote=quote(4101))
+    token, _ = review.mint_token(24, "price_crossing", now=NOW)
+    page = n8n_link.local_review(token, NOW + 5)
+    assert "Closed (unconfirmed)" in page and "not recorded" in page.lower() and "Last entry recorded" in page
+    assert "Below entry price" not in page and "Above entry price" not in page and "Quote vs entry" not in page and "Exit price" not in page
+
+
+def test_only_what_the_user_enters_about_the_closure_is_stored_and_it_validates():
+    cfg = alerts.save_settings({"position_status": "closed", "exit_price": 3990.5, "closed_at": "2026-11-17", "closure_reason": "my decision"}, NOW)
+    assert cfg["exit_price"] == 3990.5 and cfg["closure_reason"] == "my decision"
+    assert "Exit price (you entered)" in n8n_link.local_review(review.mint_token(24, "x", now=NOW)[0], NOW + 5)
+    with pytest.raises(alerts.SettingsError):
+        alerts.save_settings({"position_status": "maybe"}, NOW)
+    with pytest.raises(alerts.SettingsError):
+        alerts.save_settings({"exit_price": -1}, NOW)
+    with pytest.raises(alerts.SettingsError):
+        alerts.save_settings({"closure_reason": "x" * 300}, NOW)
+
+
+def test_reopening_restores_the_entry_notes():
+    alerts.save_settings({"position_status": "open"}, NOW)
+    assert alerts.below_entry_note(4000.0, alerts.entry_for_notes(alerts.get_settings())) == "Below entry price"
+
+
+def test_no_entry_warning_in_the_basis_check_for_a_closed_position():
+    b = alerts.verify_basis(NOW, quotes={"futures": quote(3850), "spot": quote(3862, basis="spot")})
+    assert not any("entry price" in w.lower() and "away" in w.lower() for w in b["warnings"])
+    assert b["position"]["status"] == "closed_unconfirmed"

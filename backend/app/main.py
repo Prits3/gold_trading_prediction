@@ -13,12 +13,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, alpaca, config, n8n_link, threshold_research, db, drivers, ledger, learning, market, news_store, nowcast, quote, registry, research_drivers, worker
+from . import alerts, alpaca, config, n8n_link, paper, quality, threshold_research, workspace, db, drivers, ledger, learning, market, news_store, nowcast, quote, registry, research_drivers, worker
 from .data import DataStore, DataUnavailable, Dataset, ValidationError
 from .model import ModelError, run_prediction
 from .news import NewsService
@@ -34,12 +34,12 @@ _forecast_lock = threading.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start an in-process worker ONLY if no standalone worker (e.g. launchd) holds the daemon lock. The jobs themselves do not
+    """Start an in-process worker ONLY if no standalone worker is installed (launchd) or holding the daemon lock. The jobs themselves do not
     depend on this web process: ``python -m app.worker run`` runs them with no browser or server open."""
     stop = threading.Event()
     thread = None
-    if not config.OFFLINE and os.environ.get("GOLD_EMBEDDED_WORKER", "1") != "0":
-        thread = threading.Thread(target=worker.run_loop, args=(stop,), name="embedded-worker", daemon=True)
+    if not config.OFFLINE and os.environ.get("GOLD_EMBEDDED_WORKER", "1") != "0" and not worker.standalone_installed():
+        thread = threading.Thread(target=worker.run_loop, args=(stop, True, "web-embedded"), name="embedded-worker", daemon=True)
         thread.start()
     try:
         yield
@@ -49,6 +49,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gold Outlook API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST", "PUT"], allow_headers=["*"])
+
+
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _mutation_allowed(request: Request) -> tuple[bool, str]:
+    """State-changing calls: with GOLD_API_TOKEN set, the token is required. Otherwise only loopback clients, and (if the browser sent an Origin)
+    only this app's own origins, so another website open in the same browser cannot drive the local API."""
+    if config.API_TOKEN:
+        import hmac
+        ok = hmac.compare_digest(request.headers.get("x-gold-token", ""), config.API_TOKEN)
+        return ok, "a valid X-Gold-Token header is required"
+    if (request.client.host if request.client else "") not in _LOOPBACK:
+        return False, "state-changing calls are accepted from this machine only (set GOLD_API_TOKEN to allow others)"
+    origin = request.headers.get("origin")
+    if origin:
+        host = request.headers.get("host", "")
+        allowed = set(config.CORS_ORIGINS) | {f"http://{host}", f"https://{host}"}
+        if origin not in allowed:
+            return False, "cross-origin request refused"
+    return True, ""
+
+
+@app.middleware("http")
+async def guard_mutations(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.url.path.startswith("/api/"):
+        ok, why = _mutation_allowed(request)
+        if not ok:
+            return JSONResponse(status_code=403, content={"detail": {"code": "forbidden", "message": why}})
+    return await call_next(request)
 
 
 def _err(status: int, code: str, message: str) -> HTTPException:
@@ -468,6 +498,80 @@ def export_forecast(forecast_id: str):
 def learning_status():
     return {**learning.status_payload(), "worker": worker.status(), "news": news_store.summary(),
             "drivers_research": research_drivers.latest()}
+
+
+@app.get("/api/learning/workspace")
+def learning_workspace():
+    """Everything the Learning page shows: worker/runtime, per-horizon active model, candidates, forward vs development evidence, trend, quality, attempts."""
+    return workspace.payload()
+
+
+@app.get("/api/quality")
+def data_quality():
+    return quality.summary(40)
+
+
+@app.post("/api/quality/run")
+def data_quality_run():
+    return quality.run()
+
+
+def _paper_err(exc: Exception) -> HTTPException:
+    return _err(422, "paper_error", str(exc))
+
+
+@app.get("/api/paper")
+def paper_panel():
+    """The simulated gold book(s). Simulation only: there is no broker connection anywhere in this app's paper trading."""
+    return paper.panel()
+
+
+@app.post("/api/paper/book")
+def paper_new_book(body: dict = Body(default={})):
+    """Start a fresh book (archiving, never deleting, the current one). Optional: name, initial_cash, params."""
+    try:
+        return paper.new_book(body.get("name"), float(body.get("initial_cash", 10_000.0)), body.get("params"))
+    except (paper.PaperError, TypeError, ValueError) as exc:
+        raise _paper_err(exc) from exc
+
+
+@app.put("/api/paper/book/{book_id}/params")
+def paper_params(book_id: int, patch: dict = Body(...)):
+    try:
+        return paper.update_params(book_id, patch)
+    except paper.PaperError as exc:
+        raise _paper_err(exc) from exc
+
+
+@app.post("/api/paper/book/{book_id}/pause")
+def paper_pause(book_id: int, body: dict = Body(default={})):
+    try:
+        return paper.pause(book_id, str(body.get("reason") or "paused by you")[:200])
+    except paper.PaperError as exc:
+        raise _paper_err(exc) from exc
+
+
+@app.post("/api/paper/book/{book_id}/resume")
+def paper_resume(book_id: int):
+    try:
+        return paper.resume(book_id)
+    except paper.PaperError as exc:
+        raise _paper_err(exc) from exc
+
+
+@app.post("/api/paper/book/{book_id}/flatten")
+def paper_flatten(book_id: int):
+    try:
+        return paper.flatten(book_id, alerts.fetch_quote("futures"))
+    except paper.PaperError as exc:
+        raise _paper_err(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - no quote: the simulated position is left as it is
+        raise _err(503, "no_quote", f"No quote is available to price the close: {exc.__class__.__name__}") from exc
+
+
+@app.post("/api/paper/evaluate")
+def paper_evaluate_now():
+    return worker.run_job("paper", worker.job_paper, force=True) or {"error": "the paper job failed; see the Learning page's job status"}
 
 
 @app.get("/api/drivers")

@@ -20,7 +20,7 @@ cat <<PLISTEOF
   </array>
   <key>WorkingDirectory</key><string>$REPO/backend</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PYTHONPATH</key><string>$REPO/backend</string></dict>
+  <dict><key>PYTHONPATH</key><string>$REPO/backend</string><key>GOLD_RUNTIME</key><string>launchd</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>

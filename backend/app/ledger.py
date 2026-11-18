@@ -5,6 +5,8 @@ retrained model issues NEW forecasts. Scoring writes one outcome row, only from 
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 
 import numpy as np
@@ -24,6 +26,14 @@ def target_def(task: str) -> str:
     return TARGET_DEFS["nowcast"] if task == "nowcast" else TARGET_DEFS["fwd"]
 
 
+def dataset_hash(close: pd.Series, drivers_df: pd.DataFrame | None = None) -> str:
+    """A short content hash of the exact inputs a forecast was trained on (the dataset snapshot): prices, and driver values when used."""
+    h = hashlib.sha256(pd.util.hash_pandas_object(close.astype(float).round(6), index=True).values.tobytes())
+    if drivers_df is not None and len(drivers_df):
+        h.update(pd.util.hash_pandas_object(drivers_df.select_dtypes("number").round(8), index=True).values.tobytes())
+    return h.hexdigest()[:16]
+
+
 def forecast_id(task: str, role: str, version: str, base_time: str, target_date: str) -> str:
     return f"{task}|{role}|{version}|{base_time}|{target_date}"
 
@@ -31,7 +41,7 @@ def forecast_id(task: str, role: str, version: str, base_time: str, target_date:
 def issue(*, task: str, role: str, version: str, algorithm: str, feature_schema: str, input_cutoff: float, base_price: float,
           base_time: str, target_date: str, target_time: str, predicted: float, low: float | None, high: float | None,
           level: float | None, horizon: int | None = None, data_key: str | None = None, hours_left: float | None = None,
-          issued_at: float | None = None) -> bool:
+          issued_at: float | None = None, dataset_hash: str | None = None) -> bool:
     """Insert a forecast. Returns False (and changes nothing) if this exact forecast already exists or if it would be
     issued at or after its own target moment: such a "forecast" is not out-of-sample evidence and is never logged."""
     if not np.isfinite(predicted) or not np.isfinite(base_price):
@@ -43,12 +53,31 @@ def issue(*, task: str, role: str, version: str, algorithm: str, feature_schema:
         return False
     cur = db.connect().execute(
         "INSERT OR IGNORE INTO forecasts (id,task,instrument,target_def,role,model_version,algorithm,feature_schema,issued_at,input_cutoff,"
-        "base_price,base_time,target_date,target_time,horizon,predicted,low,high,level,data_key,hours_left) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "base_price,base_time,target_date,target_time,horizon,predicted,low,high,level,data_key,hours_left,dataset_hash) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (forecast_id(task, role, version, base_time, target_date), task, INSTRUMENT, target_def(task), role, version, algorithm, feature_schema,
          issued_at or time.time(), input_cutoff, float(base_price), base_time, target_date, target_time, horizon, float(predicted),
-         None if low is None else float(low), None if high is None else float(high), level, data_key, hours_left))
-    return cur.rowcount == 1
+         None if low is None else float(low), None if high is None else float(high), level, data_key, hours_left, dataset_hash))
+    if cur.rowcount == 1:
+        return True
+    _audit_conflict(forecast_id(task, role, version, base_time, target_date), data_key, dataset_hash, float(predicted))
+    return False
+
+
+def _audit_conflict(fid: str, data_key: str | None, dataset_hash: str | None, predicted: float) -> None:
+    """The id is deterministic, so re-issuing from DIFFERENT inputs is ignored (the original stays, with its original timestamp) -- but never
+    silently: the conflict is recorded so a revised dataset can be seen, and an older forecast is never presented under a newer timestamp."""
+    old = db.rows("SELECT data_key, dataset_hash, predicted FROM forecasts WHERE id=?", (fid,))
+    if not old:
+        return
+    o = old[0]
+    differs = (dataset_hash and o["dataset_hash"] and dataset_hash != o["dataset_hash"]) or (data_key and o["data_key"] and data_key != o["data_key"]) or abs(o["predicted"] - predicted) > 0.005
+    if not differs:
+        return
+    detail = json.dumps({"kept": {"data_key": o["data_key"], "dataset_hash": o["dataset_hash"], "predicted": o["predicted"]},
+                         "rejected_reissue": {"data_key": data_key, "dataset_hash": dataset_hash, "predicted": predicted}}, default=float)
+    if not db.rows("SELECT 1 FROM ledger_audit WHERE forecast_id=? AND kind='snapshot_conflict' AND detail=?", (fid, detail)):
+        db.connect().execute("INSERT INTO ledger_audit (at, forecast_id, kind, detail) VALUES (?,?,?,?)", (time.time(), fid, "snapshot_conflict", detail))
 
 
 def mature(daily: pd.Series, now: float | None = None) -> int:

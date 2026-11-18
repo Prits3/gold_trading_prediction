@@ -14,6 +14,10 @@ from . import db
 
 TASKS = ("nowcast", "fwd_1", "fwd_5", "fwd_20")
 FEATURE_SCHEMAS = ("gold_v1", "drivers_v1")
+# Bounded additions (ridge + one tree model only; not "every algorithm on every feature set"). patterns_v1 and the EXPERIMENTAL fib_v1 are compared
+# on identical origins; fib_v1 is rejected (stops issuing) unless the pre-set paired test supports it. See feature_groups.py and learning.fib_verdict.
+PATTERN_ALGOS = ("ridge", "hgb")
+PATTERN_SCHEMAS = ("patterns_v1", "fib_v1")
 FWD_ALGOS = ("ridge", "hgb", "random_forest")
 NOWCAST_ALGOS = ("ridge", "hgb", "extra_trees")
 
@@ -34,7 +38,7 @@ def candidate_specs(task: str) -> list[tuple[str, str]]:
     """The (algorithm, schema) pairs tried for a task. Deliberately small: every extra candidate raises the chance of a lucky win."""
     if task == "nowcast":
         return [(a, "intraday_v1") for a in NOWCAST_ALGOS]
-    return [(a, s) for a in FWD_ALGOS for s in FEATURE_SCHEMAS]
+    return [(a, s) for a in FWD_ALGOS for s in FEATURE_SCHEMAS] + [(a, s) for a in PATTERN_ALGOS for s in PATTERN_SCHEMAS]
 
 
 def seed() -> None:
@@ -62,8 +66,29 @@ def champion(task: str) -> dict:
     return r[0]
 
 
-def versions(task: str) -> list[dict]:
-    return db.rows("SELECT * FROM models WHERE task=? ORDER BY status='champion' DESC, version", (task,))
+def versions(task: str, include_rejected: bool = False) -> list[dict]:
+    """Versions that currently take part in forecasting and evaluation. Rejected ones keep their rows (and all their ledger history) but are idle."""
+    q = "SELECT * FROM models WHERE task=?" + ("" if include_rejected else " AND status!='rejected'") + " ORDER BY status='champion' DESC, version"
+    return db.rows(q, (task,))
+
+
+def reject_schema(schema: str, reason: str, evidence: dict | None = None) -> list[str]:
+    """Stop using every non-champion version of a feature schema. History is kept; nothing is deleted or rewritten."""
+    now, done = time.time(), []
+    for v in db.rows("SELECT * FROM models WHERE feature_schema=? AND status IN ('challenger','retired')", (schema,)):
+        db.connect().execute("UPDATE models SET status='rejected', status_changed_at=?, notes=? WHERE version=?", (now, reason[:300], v["version"]))
+        log_decision(v["task"], "evaluation", "reject", reason, v["version"], v["version"], evidence)
+        done.append(v["version"])
+    return done
+
+
+def restore_schema(schema: str) -> list[str]:
+    """Reinstate rejected versions when later evidence supports the group (they re-enter as challengers)."""
+    now, done = time.time(), []
+    for v in db.rows("SELECT * FROM models WHERE feature_schema=? AND status='rejected'", (schema,)):
+        db.connect().execute("UPDATE models SET status='challenger', status_changed_at=?, notes=NULL WHERE version=?", (now, v["version"]))
+        done.append(v["version"])
+    return done
 
 
 def mark_trained(version: str, trained_through: str) -> None:

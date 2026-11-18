@@ -197,7 +197,86 @@ CREATE TABLE IF NOT EXISTS touch_outcomes (
 );
 CREATE TRIGGER IF NOT EXISTS touch_outcomes_no_update BEFORE UPDATE ON touch_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are write-once'); END;
 CREATE TRIGGER IF NOT EXISTS touch_outcomes_no_delete BEFORE DELETE ON touch_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are write-once'); END;
+-- ---------------------------------------------------------------------------------------------------------------------------
+-- Operations: durable job state, daily-cycle records, data quarantine, every training attempt, ledger audit
+-- ---------------------------------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS job_state (
+  job TEXT PRIMARY KEY,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at REAL, last_success_at REAL, last_error TEXT,
+  next_retry_at REAL,                -- no attempt before this moment after repeated failures (bounded exponential back-off)
+  gave_up INTEGER NOT NULL DEFAULT 0 -- retry limit reached: skipped until the next scheduled cycle resets it
+);
+CREATE TABLE IF NOT EXISTS cycle_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at REAL NOT NULL, finished_at REAL,
+  trigger TEXT NOT NULL,             -- scheduled | catch-up | session | manual
+  runtime TEXT, data_through TEXT,
+  steps TEXT NOT NULL,               -- JSON: ordered step results (collect, validate, score, learn, ...)
+  status TEXT NOT NULL               -- running | ok | partial | failed
+);
+CREATE TABLE IF NOT EXISTS data_quarantine (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detected_at REAL NOT NULL, source TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
+  detail TEXT NOT NULL, raw TEXT,    -- the raw observation exactly as received (never altered or deleted)
+  status TEXT NOT NULL,              -- quarantined (excluded) | flagged (kept, needs review) | kept_after_check | resolved
+  UNIQUE (source, kind, key)
+);
+CREATE TABLE IF NOT EXISTS training_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at REAL NOT NULL, task TEXT NOT NULL, version TEXT NOT NULL,
+  stage TEXT NOT NULL,               -- dev_eval | forecast_fit | feature_group
+  status TEXT NOT NULL,              -- ok | failed
+  data_through TEXT, duration_s REAL, detail TEXT
+);
+CREATE TABLE IF NOT EXISTS ledger_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at REAL NOT NULL, forecast_id TEXT, kind TEXT NOT NULL, detail TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dev_series (   -- walk-forward predicted vs actual for the champion (DEVELOPMENT evidence, never forward results)
+  data_through TEXT NOT NULL, task TEXT NOT NULL, version TEXT NOT NULL, series TEXT NOT NULL,
+  PRIMARY KEY (data_through, task, version)
+);
+CREATE TABLE IF NOT EXISTS feature_evals (
+  data_through TEXT NOT NULL, group_name TEXT NOT NULL, evaluated_at REAL NOT NULL, result TEXT NOT NULL,
+  PRIMARY KEY (data_through, group_name)
+);
+
+-- ---------------------------------------------------------------------------------------------------------------------------
+-- Paper trading (simulation only: nothing in this schema or its module can reach a broker)
+-- ---------------------------------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS paper_books (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL, created_at REAL NOT NULL,
+  status TEXT NOT NULL,              -- active | paused | archived
+  paused_reason TEXT, archived_at REAL,
+  initial_cash REAL NOT NULL,
+  params TEXT NOT NULL,              -- JSON: risk limits and cost assumptions frozen for this book
+  baseline_price REAL, baseline_at REAL   -- first mark: the start of the buy-and-hold comparison
+);
+CREATE TABLE IF NOT EXISTS paper_fills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  book_id INTEGER NOT NULL REFERENCES paper_books(id),
+  ts REAL NOT NULL, side TEXT NOT NULL,          -- buy | sell
+  qty REAL NOT NULL, price REAL NOT NULL, cost REAL NOT NULL,
+  forecast_id TEXT,                              -- the immutable forecast that justified the entry
+  rationale TEXT NOT NULL, reason TEXT NOT NULL, -- reason: entry | target | stop | risk | manual
+  order_key TEXT NOT NULL,
+  UNIQUE (book_id, order_key)                    -- a decision is posted at most once
+);
+CREATE TABLE IF NOT EXISTS paper_equity (
+  book_id INTEGER NOT NULL REFERENCES paper_books(id), ts REAL NOT NULL,
+  cash REAL NOT NULL, qty REAL NOT NULL, mark REAL NOT NULL, equity REAL NOT NULL,
+  PRIMARY KEY (book_id, ts)
+);
+CREATE TABLE IF NOT EXISTS paper_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, book_id INTEGER, ts REAL NOT NULL,
+  kind TEXT NOT NULL,                            -- signal | blocked | pause | resume | reset | new_book | error
+  detail TEXT NOT NULL, forecast_id TEXT
+);
 """
+
+_MIGRATIONS = ("ALTER TABLE forecasts ADD COLUMN dataset_hash TEXT",)
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -222,6 +301,9 @@ def connect() -> sqlite3.Connection:
     with _init_lock:
         if p not in _inited:
             conn.executescript(SCHEMA)
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(forecasts)").fetchall()}
+            if "dataset_hash" not in cols:            # additive migration: older rows keep NULL ("not recorded"), nothing is rewritten
+                conn.execute(_MIGRATIONS[0])
             _inited.add(p)
     _local.conn, _local.path = conn, p
     return conn

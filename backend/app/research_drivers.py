@@ -26,6 +26,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from . import config, drivers
+from .feature_groups import all_candidate_features
 from .features import FEATURE_NAMES, build_features, build_target
 
 REFIT = 21
@@ -47,7 +48,7 @@ def build_dataset(close: pd.Series, h: int, df_drivers: pd.DataFrame) -> dict:
     d_leak = drivers.asof_features(origins, df_drivers, same_day_control=True)
     dcols = drivers.ALL_DRIVER_FEATURES
     ret = np.log(close).diff()
-    X = pd.concat([feats, d_ok[dcols].add_prefix("d_"), d_leak[dcols].add_prefix("leak_")], axis=1)
+    X = pd.concat([feats, d_ok[dcols].add_prefix("d_"), d_leak[dcols].add_prefix("leak_"), all_candidate_features(close)], axis=1)
     X["vol60"] = ret.rolling(60).std()
     y = build_target(close, h)
     x_now = X.iloc[-1]  # the latest origin: its inputs are known, its target is not (never used for training)

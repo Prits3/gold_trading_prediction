@@ -35,6 +35,10 @@ DEFAULTS: dict = {
     "levels": [4000.0, 4100.0],       # user-selected review levels, USD per troy ounce
     "entry_price": 4039.96,           # the user's entry, as entered. Its instrument is NOT verified (see verify_basis)
     "position_size": None,            # optional; profit is never computed without size AND costs
+    # The manually tracked Trading 212 position. The user reported it CLOSED; the app has not seen the fill, so it is "closed_unconfirmed" until
+    # the user reconciles it. exit_price / closed_at / closure_reason stay empty unless the USER supplies them: nothing is inferred or invented.
+    "position_status": "closed_unconfirmed",   # open | closed_unconfirmed | closed
+    "exit_price": None, "closed_at": None, "closure_reason": None,
     "quote_basis": "futures",         # which observed quote the price alert watches: futures (matches the forecasts) | spot
     "immediate_sms": False,           # optional SMS the moment a new forecast first qualifies
     "price_sms": True,                # SMS for an observed crossing
@@ -84,7 +88,18 @@ def validate(patch: dict) -> dict:
             if any(not 100 <= x <= 100000 for x in lv):
                 raise SettingsError("Review levels must be USD per troy ounce between 100 and 100,000.")
             clean[k] = lv
-        elif k in ("entry_price", "position_size"):
+        elif k == "position_status":
+            if v not in ("open", "closed_unconfirmed", "closed"):
+                raise SettingsError("position_status must be open, closed_unconfirmed or closed.")
+            clean[k] = v
+        elif k in ("closed_at", "closure_reason"):
+            if v in (None, ""):
+                clean[k] = None
+            elif not isinstance(v, str) or len(v) > 200:
+                raise SettingsError(f"{k} must be text of at most 200 characters.")
+            else:
+                clean[k] = v.strip()
+        elif k in ("entry_price", "position_size", "exit_price"):
             if v in (None, ""):
                 clean[k] = None
             else:
@@ -184,6 +199,20 @@ def futures_session_date(epoch: float) -> str:
     return (datetime.fromtimestamp(epoch, NY) + timedelta(hours=6)).date().isoformat()
 
 
+def position_open(cfg: dict) -> bool:
+    return cfg.get("position_status", "closed_unconfirmed") == "open"
+
+
+def entry_for_notes(cfg: dict) -> float | None:
+    """The entry price only means something while the tracked position is open: a closed (or unconfirmed) position has no entry to compare with."""
+    return cfg.get("entry_price") if position_open(cfg) else None
+
+
+def review_phrase(cfg: dict) -> str:
+    return ("Review your position; no response means no trade." if position_open(cfg) else
+            "Your tracked position is recorded as closed (unconfirmed), so this is a price-level notice only. No response means no trade.")
+
+
 def below_entry_note(level: float, entry: float | None) -> str | None:
     if entry is None:
         return None
@@ -247,13 +276,13 @@ def _fc_target_epoch(row: dict) -> float:
 
 def headsup_message(row: dict, level: float, cfg: dict, perf: str) -> str:
     tdate = session_label(row["target_date"])
-    note = below_entry_note(level, cfg.get("entry_price"))
+    note = below_entry_note(level, entry_for_notes(cfg))
     src = "unchanged-price baseline (not a learned prediction)" if row["algorithm"] == "unchanged" else "model forecast"
     return (f"FORECAST heads-up. The {INSTRUMENT_NAME} settlement forecast for {tdate} is {usd(row['predicted'])}, at or above your {lvl(level)} review level"
             f"{' (' + note.lower() + ')' if note else ''}. Forecast range ({round(row['level'] * 100)}%): {usd(row['low'])}–{usd(row['high'])}. "
             f"Issued {_fmt_et(row['issued_at'])} ({src}). {perf} "
             "This is a forecast of the settlement price (the close), not a statement that the price will reach or touch the level, and not a recommendation. "
-            "Review your position; no response means no trade.")
+            + review_phrase(cfg))
 
 
 def check_forecasts(now: float | None = None) -> dict:
@@ -291,7 +320,7 @@ def check_forecasts(now: float | None = None) -> dict:
             payload = {"task": task, "forecast_id": row["id"], "predicted": row["predicted"], "low": row["low"], "high": row["high"], "level": row["level"],
                        "target_date": row["target_date"], "target_time": row["target_time"], "issued_at": row["issued_at"], "threshold": level,
                        "model_version": row["model_version"], "reference_price": row["base_price"], "performance": perf, "kind": "endpoint_settlement",
-                       "below_entry": below_entry_note(level, cfg.get("entry_price"))}
+                       "below_entry": below_entry_note(level, entry_for_notes(cfg))}
             eid = create_event(alert_type="forecast_headsup", threshold=level, target_session=row["target_date"], message=headsup_message(row, level, cfg, perf),
                                payload=payload, now=now, expires_at=tgt, sms_requested=cfg["immediate_sms"])
             if eid is None:
@@ -323,10 +352,10 @@ def fetch_quote(basis: str) -> dict:
 
 def price_message(q: dict, level: float, cfg: dict, first_sight: bool) -> str:
     basis = "delayed quote (~10 min behind)" if q["basis"] == "futures" else "spot quote"
-    note = below_entry_note(level, cfg.get("entry_price"))
+    note = below_entry_note(level, entry_for_notes(cfg))
     return (f"ACTUAL PRICE alert (observed quote, not a forecast). {q['instrument']}, {basis}: {usd(q['price'])} as of {_fmt_et(q['as_of'], '%a %d %b %H:%M')}, "
             f"{'already ' if first_sight else 'crossed '}at or above your {lvl(level)} review level"
-            f"{' (' + note.lower() + ')' if note else ''}. Review your position; no response means no trade.")
+            f"{' (' + note.lower() + ')' if note else ''}. {review_phrase(cfg)}")
 
 
 def check_price(now: float | None = None, quote: dict | None = None) -> dict:
@@ -368,7 +397,7 @@ def check_price(now: float | None = None, quote: dict | None = None) -> dict:
             eid = create_event(alert_type="price_crossing", threshold=level, target_session=session, episode=st["episode"], now=now, sms_requested=cfg["price_sms"],
                                expires_at=now + cfg["event_expiry_min"] * 60, message=price_message(q, level, cfg, first_sight=not st["seen"]),
                                payload={"price": q["price"], "as_of": q["as_of"], "basis": basis, "source": q["source"], "threshold": level, "first_sight": not st["seen"],
-                                        "session": session, "below_entry": below_entry_note(level, cfg.get("entry_price"))})
+                                        "session": session, "below_entry": below_entry_note(level, entry_for_notes(cfg))})
             st.update({"armed": False, "fired_session": session})
             if eid is None:
                 log("price_check", "duplicate", f"level {level:g} session {session}", now)
@@ -405,7 +434,7 @@ def verify_basis(now: float | None = None, quotes: dict | None = None) -> dict:
     warn: list[str] = []
     ref = (fut if "price" in fut else spot if "price" in spot else None)
     entry = cfg.get("entry_price")
-    if ref and entry:
+    if ref and entry and position_open(cfg):
         gap = (entry / ref["price"] - 1) * 100
         if abs(gap) > 3:
             warn.append(f"Your entry price {usd(entry)} is {gap:+.1f}% away from the current {ref['basis']} quote {usd(ref['price'])}. "
@@ -425,12 +454,22 @@ def verify_basis(now: float | None = None, quotes: dict | None = None) -> dict:
         "currency_checked": _currency_line(fut, spot),
         "quotes": {k: ({"price": v["price"], "as_of": v["as_of"], "age_min": round((now - v["as_of"]) / 60, 1), "source": v["source"]} if "price" in v else v) for k, v in got.items()},
         "spot_minus_futures": basis_gap,
-        "entry_price": {"value": entry, "verified": False, "note": "Taken as entered. This app cannot see which Trading 212 instrument (CFD, ETC, currency) your entry refers to."},
+        "entry_price": {"value": entry, "verified": False, "note": "Taken as entered. This app cannot see which Trading 212 instrument (CFD, ETC, currency) your entry refers to."
+                        + ("" if position_open(cfg) else " The tracked position is recorded as closed, so the entry is history, not a comparison point."), },
+        "position": position_info(cfg),
         "warnings": warn,
     }
 
 
 # ----------------------------------------------------------------------------------------------------------------- UI payload
+def position_info(cfg: dict) -> dict:
+    st = cfg.get("position_status", "closed_unconfirmed")
+    note = {"open": "Tracked as open at the entry price you entered (its instrument is not verified).",
+            "closed_unconfirmed": "You reported this position closed. The app has not seen the fill, so the exit price, the realised result and the reason are NOT recorded and nothing is assumed about them.",
+            "closed": "Recorded as closed. Only what you entered is shown; profit is not computed."}[st]
+    return {"status": st, "entry_price": cfg.get("entry_price"), "exit_price": cfg.get("exit_price"), "closed_at": cfg.get("closed_at"), "closure_reason": cfg.get("closure_reason"), "note": note}
+
+
 def panel(now: float | None = None) -> dict:
     from . import n8n_link
     now = now or time.time()
@@ -439,7 +478,8 @@ def panel(now: float | None = None) -> dict:
     last = ev[0] if ev else None
     return {
         "settings": cfg,
-        "levels": [{"level": x, "note": below_entry_note(x, cfg.get("entry_price"))} for x in cfg["levels"]],
+        "levels": [{"level": x, "note": below_entry_note(x, entry_for_notes(cfg))} for x in cfg["levels"]],
+        "position": position_info(cfg),
         "last_forecast_check": _state_get("last_forecast_check"),
         "last_price_check": _state_get("last_price_check"),
         "last_alert": last,

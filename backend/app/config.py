@@ -43,3 +43,7 @@ N8N_WEBHOOK_BASE = os.getenv("N8N_WEBHOOK_BASE", "").strip().rstrip("/")    # e.
 N8N_AUTH_HEADER = os.getenv("N8N_AUTH_HEADER", "X-Gold-Secret").strip()
 N8N_AUTH_SECRET = os.getenv("N8N_AUTH_SECRET", "").strip()                  # also entered once in n8n as a Header Auth credential
 ALERT_REVIEW_BASE_URL = os.getenv("ALERT_REVIEW_BASE_URL", "").strip().rstrip("/")  # default: <N8N_WEBHOOK_BASE>/gold-review
+
+# Optional shared secret for state-changing API calls (POST/PUT/DELETE). Without it, only loopback clients from this app's own origin may change anything.
+# Use it (behind HTTPS) if the API is ever reachable from another machine. The browser UI does not send it, so a token-protected API is for scripts.
+API_TOKEN = os.getenv("GOLD_API_TOKEN", "").strip()
