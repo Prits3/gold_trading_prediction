@@ -15,7 +15,7 @@ A gold price app with one main screen — choose a horizon, press **Predict**, r
 ## Start
 
 ```bash
-./start.sh                 # installs on first run, builds the UI, serves http://localhost:8742
+./start.sh                 # installs on first run, builds the UI, serves http://localhost:8742 (the next free port if another program has it; the URL is printed)
 PORT=9000 ./start.sh       # another port
 ```
 
