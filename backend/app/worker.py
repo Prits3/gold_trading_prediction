@@ -446,10 +446,30 @@ def status() -> dict:
             "spot_ticks": db.rows("SELECT COUNT(*) AS n FROM spot_ticks")[0]["n"], "cycle_overdue": cycle_overdue()}
 
 
+def cycle_history(limit: int = 10) -> dict:
+    """The persisted full-cycle records and a plain verdict on whether any was started by the schedule (not by hand).
+
+    Only rows in ``cycle_runs`` count as evidence. ``scheduled`` is the 23:30 UTC trigger, ``catch-up`` an overdue run at worker start, ``manual`` a hand-started run."""
+    rows = db.rows("SELECT id, trigger, runtime, started_at, finished_at, data_through, status, steps FROM cycle_runs ORDER BY id DESC LIMIT ?", (limit,))
+    for r in rows:
+        r["steps"] = [{"step": s.get("step"), "status": s.get("status")} for s in json.loads(r["steps"] or "[]")]
+    counts = {r["trigger"]: r["n"] for r in db.rows("SELECT trigger, COUNT(*) AS n FROM cycle_runs GROUP BY trigger")}
+    sched_ok = db.rows("SELECT COUNT(*) AS n FROM cycle_runs WHERE trigger='scheduled' AND status='ok'")[0]["n"]
+    nxt = next_daily_cycle()
+    if sched_ok:
+        verdict = f"{sched_ok} scheduled cycle(s) recorded with status ok."
+    elif counts.get("scheduled"):
+        verdict = "Scheduled cycle(s) ran but none finished ok; see the steps."
+    else:
+        verdict = f"No scheduled cycle has been recorded yet. The next is due {nxt:%Y-%m-%d %H:%M} UTC."
+    return {"counts": counts, "scheduled_ok": sched_ok, "next_scheduled_utc": nxt.isoformat(), "verdict": verdict, "recent": rows}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="app.worker")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run")
+    sub.add_parser("cycles", help="the persisted full-cycle records and whether the schedule has run")
     sub.add_parser("once")
     sub.add_parser("validate")
     sub.add_parser("learn").add_argument("--force", action="store_true", help="re-run the development evaluation for the current data")
@@ -466,6 +486,16 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if a.cmd == "run":
         return 0 if run_loop(wait_for_lock=True) else 0
+    if a.cmd == "cycles":
+        h = cycle_history()
+        print(h["verdict"])
+        print("by trigger:", h["counts"] or "none")
+        for r in h["recent"]:
+            t0 = datetime.fromtimestamp(r["started_at"], timezone.utc)
+            secs = "-" if r["finished_at"] is None else f"{r['finished_at'] - r['started_at']:.0f}s"
+            print(f"  #{r['id']:<3} {r['trigger']:<9} {t0:%Y-%m-%d %H:%M} UTC  {secs:>5}  {r['status']:<8} runtime={r['runtime']}  data through {r['data_through']}")
+            print("       " + " ".join(f"{s['step']}={s['status']}" for s in r["steps"]))
+        return 0
     if a.cmd == "learn":
         print(json.dumps(run_job("learn", job_learn, a.force), indent=1, default=str))
         return 0

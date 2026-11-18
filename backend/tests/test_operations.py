@@ -79,6 +79,20 @@ def test_the_cycle_runs_the_sequence_in_order_and_records_every_step(monkeypatch
     assert c["trigger"] == "scheduled" and c["status"] == "ok" and [s["step"] for s in c["steps"]] == list(worker.STEP_ORDER) and c["data_through"] == "2026-11-17"
 
 
+def test_cycle_history_counts_a_scheduled_cycle_only_when_one_is_recorded(monkeypatch):
+    assert "No scheduled cycle has been recorded" in worker.cycle_history()["verdict"]
+    _stub_all(monkeypatch)
+    worker.full_cycle("manual")
+    h = worker.cycle_history()
+    assert h["scheduled_ok"] == 0 and h["counts"] == {"manual": 1} and "No scheduled cycle has been recorded" in h["verdict"]   # a hand-run is not the schedule
+    worker.full_cycle("catch-up")
+    assert worker.cycle_history()["scheduled_ok"] == 0                                                                              # nor is a catch-up
+    worker.full_cycle("scheduled")
+    h = worker.cycle_history()
+    assert h["scheduled_ok"] == 1 and "1 scheduled cycle(s) recorded with status ok" in h["verdict"]
+    assert h["recent"][0]["trigger"] == "scheduled" and [s["step"] for s in h["recent"][0]["steps"]] == list(worker.STEP_ORDER)
+
+
 def test_one_failing_step_is_recorded_and_the_rest_still_run(monkeypatch):
     order = _stub_all(monkeypatch, fail={"collect"})
     out = worker.full_cycle("catch-up")

@@ -8,7 +8,9 @@ A gold price app with one main screen — choose a horizon, press **Predict**, r
 |---|---|---|
 | ![Learning: worker, active model per horizon, forward vs walk-forward evidence](docs/screenshots/learning.png) | ![Paper trading: simulated gold book, risk limits, vs hold and cash](docs/screenshots/paper.png) | ![Predict at 390px](docs/screenshots/predict-mobile.png) |
 
-**What it does not do:** predict gold to 99.99%, or at all reliably. Daily gold behaves close to a random walk, and the app measures and shows that instead of hiding it. Read [What the evidence says](#what-the-evidence-says).
+**What it does not do:** predict gold to 99.99%, or at all reliably. Daily gold behaves close to a random walk, and the app measures and shows that instead of hiding it. Read [Current measured results](#current-measured-results).
+
+**Status in one paragraph** (details in [Verified manually vs on schedule](#verified-manually-vs-on-schedule)): the background worker runs under launchd and has been observed recording jobs, surviving a stopped web server and a `kill -9`. The **scheduled** 23:30 UTC daily cycle has **not yet been observed**; only a manually started full cycle is on record. No model beats the unchanged price, and there are **0 matured forward forecasts**, so nothing here shows the app is improving. It records evidence so that, in time, it can.
 
 ## Start
 
@@ -27,15 +29,46 @@ The web app starts an in-process background worker **only if no standalone worke
 ./scripts/worker.sh logs -f     # follow its logs
 ./scripts/worker.sh restart
 ./scripts/worker.sh uninstall   # stop and remove (data and logs are kept)
-./scripts/worker.sh once        # one full cycle now, in this terminal
+./scripts/worker.sh cycles      # the persisted full-cycle records and whether the 23:30 UTC schedule has run
+./scripts/worker.sh once        # one full cycle now, in this terminal (recorded as trigger "manual")
 cd backend && PYTHONPATH=. .venv/bin/python -m app.worker rollback fwd_5   # restore the previous champion
 ```
 
 The worker is its own process: it keeps running with the browser, the web server and the terminal closed (verified: it kept running jobs for 150 s with the web server stopped, and a `kill -9` was followed by an automatic restart). When the launchd agent is installed the web app does **not** start a second, embedded worker. The worker listens on **no port**. Its heartbeat records which runtime is operating (`launchd`, `container`, `web-embedded`, `manual`) and the Learning page and `status` report it. **A sleeping or powered-off Mac records nothing**; on wake the worker re-downloads history and runs any overdue cycle, but spot ticks and hourly intraday forecasts missed while asleep cannot be reconstructed and stay as visible gaps. For an always-on host see [deploy/README.md](deploy/README.md) (container files, **not built or run here**).
 
-Logs: `~/Library/Logs/gold-outlook/worker.log`.
+Logs: `~/Library/Logs/gold-outlook/worker.err.log` (the worker's Python log, which goes to stderr; `worker.log` is stdout and normally empty; `./scripts/worker.sh logs` shows both). The durable record is the database: `job_runs` (every job run), `job_state` (failures, back-off, retry limit) and `cycle_runs` (every full cycle, its trigger and each step). `./scripts/worker.sh cycles` prints `cycle_runs`.
 
-**Daily sequence** (every step recorded in `cycle_runs`; one failing step never stops the rest): collect → **validate** (quarantine bad data) → score matured forecasts → features → train candidates → evaluate → record the decision → publish forecasts → next settlement → touch research → deliver alerts → paper book. Persistent per-job state with bounded back-off (30 s, 2 min, 10 min, then hourly) and a retry limit; a scheduled or manual cycle starts every job fresh; collection is re-tried (at most every 15 min) while a completed session's data, per the exchange calendar, has not arrived.
+### The daily loop
+
+```
+collect → validate → score → features → train candidates → evaluate → record decision → publish forecasts → alerts → paper book
+```
+
+| Step | What happens | Written to |
+|---|---|---|
+| collect | Download daily gold, drivers and news; a day's bar counts only once its session has ended and agrees with the settlement-time price | `data/gc_daily_ohlc.csv`, `news_items` |
+| validate | Detect bad data (duplicates, wrong units, stale feed, schema change); quarantine it, never delete it. A *blocking* finding stops training for the day and keeps the working models | `data_quarantine` |
+| score | Match every forecast whose target settlement now exists with its actual price, once (outcomes are write-once) | `outcomes` |
+| features → train → evaluate | Rebuild features from data up to each date only; refit every bounded candidate on matured labels; compare with the unchanged price on identical dates | `training_attempts`, `dev_series`, `feature_evals` |
+| record decision | Retain, promote or roll back per horizon, with the reason | `models` (status), `decisions` |
+| publish | Issue the next forecasts (champion, challenger shadows and the unchanged baseline) into the immutable ledger | `forecasts` |
+| alerts, paper | Check review levels; evaluate the paper book against stored forecasts | `alert_*`, `paper_*` |
+
+Every step of a cycle is recorded and one failing step never stops the rest (a failed collect still lets alerts and paper run). Jobs have persistent state with bounded back-off (30 s, 2 min, 10 min, then hourly) and a retry limit of 4 in a row; a scheduled or manual cycle starts every job fresh.
+
+### Schedule, time zone, and what the Mac must be doing
+
+| Job | When |
+|---|---|
+| **Full daily cycle** | **23:30 UTC every day** (a fixed UTC time): 18:30 New York in winter (EST), 19:30 in summer (EDT); 00:30 Berlin in winter, 01:30 in summer. That is after the 17:00 ET close and the settlement bar |
+| Learning check | every 5 min: if a completed session's forecasts have not been issued yet, run validate → learn → thresholds now (so fresh data does not wait for 23:30) |
+| Collect retry | at most every 15 min while the exchange calendar says a completed session's data should exist but has not arrived |
+| Score matured forecasts | every 30 min |
+| Next-settlement forecast | hourly |
+| Alerts and paper book | every 2 min |
+| Spot price recording | every 10 s |
+
+**Requirements.** The Mac must be **awake and online** at the time. launchd starts the worker at login and restarts it after a crash (30 s throttle); it does **not** wake a sleeping Mac. During sleep nothing is collected: spot ticks and hourly intraday forecasts missed in that time are not reconstructed and remain visible gaps. After waking, the 5-minute learning check notices that a completed session is missing, re-downloads and runs the sequence once the data is there, and if the worker is restarted when learning is more than 26 h old it runs a full **catch-up** cycle immediately. A catch-up is recorded as `catch-up`, never as `scheduled`. For hosting that does not depend on this Mac see [deploy/README.md](deploy/README.md) (written but **not built or run**).
 
 ## The screen
 
@@ -74,20 +107,50 @@ Delayed data is never labelled real-time. Streaming APIs are not used because no
 
 ## How learning works
 
-```
-collect → validate → score matured forecasts → features → train candidates → evaluate → record decision → publish forecasts → alerts → paper
-```
+The loop is the one in [The daily loop](#the-daily-loop). This section is what it does to models.
+
+### Candidate models versus active models
+
+Each forecast task (`nowcast`, `fwd_1`, `fwd_5`, `fwd_20`) has exactly one **active model** (the *champion*), whose forecast is the one you see after pressing Predict. Everything else is a **candidate**:
+
+| Status | Meaning |
+|---|---|
+| **active** (champion) | In charge of that horizon's forecast. Today's are seeded models (1 session: ridge on gold inputs; 5: random forest on gold inputs; 20: ridge on gold inputs); none has been shown to beat the unchanged price, and the app labels them experimental |
+| **challenger** | Refit every day on matured labels. Its forecasts are written to the same ledger as *shadow* records, so it is judged on outcomes that did not exist when it predicted. It does not control what you see |
+| **rejected** | Stopped issuing forecasts (currently the six Fibonacci candidates). Its record is kept and nothing is deleted (`registry.restore_schema` can reinstate it) |
+| **unchanged-price baseline** | "Tomorrow equals now", issued for every horizon as the yardstick. Every model is judged against it, and it is what a promotion has to beat |
+
+Candidates are bounded: ridge, gradient boosting and random forest on gold-only and gold + market-driver features, plus ridge and gradient boosting on chart-pattern and Fibonacci features. That is 10 per horizon: 1 champion, 7 live challengers and 2 rejected. A new candidate is added only by changing code, never by the loop itself.
+
+### Promotion and rollback
+
+A challenger replaces the champion for **one horizon** only if it passes **both** gates (full text on the Learning page, "How a model gets promoted"):
+
+1. **Development gate** (walk-forward on history): at least 2% lower error than both the unchanged price and the incumbent, in at least 2 of 3 chronological periods, with a Holm-corrected block-bootstrap p < 0.10 and a range that really covers about 80%.
+2. **Forward gate** (real out-of-sample): at least **30 independent forward blocks**, beating the unchanged price by at least 1% with a 90% interval entirely below it.
+
+At most one promotion per horizon per 30 days; anything less keeps the incumbent, and the reason is written down every day. **Rollback** is automatic if a promoted champion trails the unchanged price by 5% or more over at least 20 forward blocks, and manual any time: `cd backend && PYTHONPATH=. .venv/bin/python -m app.worker rollback fwd_5`. The criteria themselves are never changed by the loop. A failed retrain or evaluation keeps the working champion and is logged as a failure, not hidden. Across the first run no challenger passed even gate 1, so every horizon **retained** its incumbent.
+
+### How the 1-, 5- and 20-session forecasts learn from matured outcomes
+
+Each horizon is learned separately. The forecast for session `t + h` (h = 1, 5 or 20 sessions) is issued after session `t` closes, and then:
+
+1. **A label exists only once its target does.** The row for origin `t` becomes a training example only when the settlement of session `t + h` has been recorded. A 20-session forecast therefore teaches nothing for four weeks, and the newest 20 origins have no label at all. Live ticks never train anything.
+2. **Scoring is once and final.** The score job matches each forecast to its target settlement; the outcome row is write-once, and the original forecast is never touched.
+3. **Refit on what has matured.** Every daily run refits each candidate on all labels that have matured by that date and issues new forecasts. The newly matured outcome becomes a training row from then on.
+4. **Two separate evidence streams.** *Walk-forward history* (about 600 origins per horizon, re-run daily, each forecast using only earlier data) is **development evidence**: it is re-examined every day, so it is not an untouched test. *Genuine forward results* (forecasts recorded before the outcome existed) are the only out-of-sample proof. They are shown apart on the Learning page.
+5. **Forward evidence accumulates slowly.** Adjacent multi-session forecasts overlap, so independence is counted in blocks: *matured target sessions ÷ horizon*. By that rule the 30-block gate needs about **30 matured target sessions at 1 session, 150 at 5 sessions and 600 at 20 sessions** (arithmetic from the rule, not a measurement). The 20-session verdict is therefore years away, and until then only the development record exists.
+
+**Is that "self-improving"?** Not by itself. A job running is not improvement. The Learning page compares successive evaluations and labels the change *improved*, *worsened* or *no meaningful change* (a 0.25-point tolerance for noise). So far the label is *no meaningful change*.
+
+### Ledger, features, and keeping data honest
 
 - **Ledger** (`backend/data/gold.db`, SQLite): every forecast stores its id, instrument and exact target definition, model version, feature schema, issue time, input cutoff, base price, **dataset hash (the exact inputs)**, target time, prediction and range. The database itself **rejects edits and deletes** of forecasts, and outcomes are write-once. A retrained model issues new forecasts; it never rewrites old ones. A re-issue of an existing forecast id from a *different* dataset snapshot is ignored (the original and its timestamp stand) **and recorded** in `ledger_audit`, never silently reused.
 - **Only matured labels train anything.** A 20-session forecast is not a training example until its target session exists, and many forecasts for the same target are not many independent outcomes. Live price ticks never train anything.
-- **Champion + challengers + shadows.** One versioned champion per forecast. Challengers issue *shadow* forecasts into the same ledger so they are judged on outcomes that did not exist when they were made. Candidate set (bounded): ridge, gradient boosting and random forest × gold / gold+drivers features, plus ridge and gradient boosting on **chart-pattern** features and on the **experimental Fibonacci** group.
 - **Feature groups.** `patterns_v1`: moving-average distances and slopes, trailing high/low distances and breakout strength, volatility-normalised. `fib_v1` (**experimental**): the retracement levels 23.6/38.2/50/61.8/78.6% of the trailing 20- and 60-session range, fixed in advance. Every feature uses data up to and including its own date only (trailing windows, no pivots needing later bars); tests recompute each feature on a truncated series and require identical values, so nothing can repaint. Futures volume is **not** used (the stored series has closes only, and continuous front-month volume is distorted by rolls). Fibonacci levels are inputs a model may use, never treated as support or resistance.
 - **Keeping Fibonacci is an evidence decision made by a pre-set rule:** for the same algorithm on identical forecast dates and outcomes, adding Fibonacci must cut the error with a paired 90% block-bootstrap interval entirely below zero at ≥2 of 3 horizons and never reliably worsen it. Otherwise its candidates are **rejected** (they stop issuing forecasts; their history is kept).
-- **Promotion rule** (also shown in the app). A challenger needs *both*: (1) a walk-forward development result at least 2% better than the unchanged price **and** the incumbent, in ≥2 of 3 periods, with a Holm-corrected block-bootstrap p < 0.10 and a range that really covers ≈80%; and (2) ≥30 effective forward blocks (matured sessions ÷ horizon) beating the unchanged price by ≥1% with a 90% interval below zero. At most one promotion per task per 30 days. Anything less retains the incumbent. Promotion criteria are never changed automatically.
-- **Rollback:** automatic if a promoted champion trails "no change" by ≥5% over ≥20 forward blocks; manual with `app.worker rollback`.
 - **No reusable "untouched test".** Walk-forward numbers are development evidence and are labelled so. Only the forward record is out-of-sample proof. Every candidate attempt, **including failures**, is logged. A failed evaluation or retrain keeps the working champion, and forecasts for a new session are still published.
 - **"Self-cleaning" means detect, record, quarantine — never delete.** Duplicate/out-of-order rows, invalid highs, wrong units, a stale feed (by the exchange calendar) and provider schema changes are written to `data_quarantine` with the raw observation verbatim. Large moves are *checked* (does the day's high agree? did the next session reverse it?) and kept, not removed for being large. Only a schema change, wrong units or a stale feed block learning. Poor predictions, losing trades and failed experiments are never erased, and source code or promotion criteria are never rewritten automatically.
-- **Genuinely automated, with evidence rather than claims:** a job running is not improvement. The Learning page compares successive evaluations and says whether measured performance improved, worsened or stayed the same.
 
 ## Paper trading (simulation only)
 
@@ -97,14 +160,58 @@ Gold only. A *book* is a simulated account (cash, at most one long position, fil
 
 `GET`s are open on the loopback address the app binds to. `POST`/`PUT`/`DELETE` are accepted only from this machine and, if a browser sends an `Origin`, only from this app's own origin (so another website open in the same browser cannot drive it). Set `GOLD_API_TOKEN` to require an `X-Gold-Token` header instead (for scripts, behind HTTPS). The worker exposes no API at all.
 
-## What the evidence says
+## Current measured results
+
+Taken from the Learning page's live data, **data through 2026-11-17** (589–598 identical forecast dates per horizon; the ledger itself began on 17 Nov 2026). Numbers change as the worker re-runs; the Learning page is authoritative. **Error vs unchanged** = mean absolute error relative to "the price stays put": **below 0% is better, above 0% is worse.**
+
+**Active model per horizon**
+
+| Horizon | Active model | Error vs unchanged | p (one-sided) | By period (3) | 80% range covers | Width | Direction right | Matured forward forecasts |
+|---|---|---|---|---|---|---|---|---|
+| 1 session | ridge · gold | **−0.1%** | 0.40 | +0.7 / −0.7 / −0.0 | 81% (90% CI 78–84) | 3.5% | 53% | **0** of 30 blocks |
+| 5 sessions | random forest · gold | **+0.6%** | 0.61 | −1.5 / −2.4 / +3.7 | 78% (74–83) | 8.0% | 56% | **0** of 30 blocks |
+| 20 sessions | ridge · gold | **+2.1%** | 0.66 | −4.8 / −10.9 / +14.7 | **70%** (61–79) | 14.4% | 58% | **0** of 30 blocks |
+
+None is distinguishable from "no change" (p ≥ 0.40, and the three periods disagree in sign). The 20-session range is **under-calibrated** (claims 80%, covered 70%, and only 61% in the latest period) and is labelled so on screen.
+
+**Every candidate, same dates and outcomes** (error vs unchanged, development evidence)
+
+| Model | Features | 1 session | 5 sessions | 20 sessions |
+|---|---|---|---|---|
+| Ridge | gold | −0.1% **(active)** | +0.0% | +2.1% **(active)** |
+| Ridge | + market drivers | −0.2% | −0.3% | +1.9% |
+| Ridge | + chart patterns | +0.1% | +0.0% | +1.8% |
+| Ridge | + Fibonacci (**rejected**) | +0.3% | −0.0% | +1.0% |
+| Gradient boosting | gold | +2.4% | +1.6% | +4.8% |
+| Gradient boosting | + market drivers | +1.0% | +1.9% | +3.7% |
+| Gradient boosting | + chart patterns | +1.9% | +2.1% | +4.6% |
+| Gradient boosting | + Fibonacci (**rejected**) | +1.8% | +2.4% | +5.6% |
+| Random forest | gold | +0.5% | +0.6% **(active)** | +4.5% |
+| Random forest | + market drivers | −0.1% | +0.9% | +2.9% |
+
+The best entry is −0.3%, the smallest p-value among all 30 cells is 0.37, and **no candidate cleared the development gate** at any horizon, so each horizon retained its incumbent. Reading the table: nothing beats the unchanged price; the tree models are usually worse than it, and ridge is within about 2% of it.
+
+**Fibonacci, tested against its own twin** (same algorithm, same dates, paired 90% block-bootstrap interval of the change in error, in points of the unchanged-price error; negative = Fibonacci helped)
+
+| Horizon | Model | With vs without Fibonacci | 90% interval | Verdict |
+|---|---|---|---|---|
+| 1 | ridge | +0.15 | −0.07 to +0.39 | no reliable change |
+| 1 | gradient boosting | −0.11 | −0.53 to +0.29 | no reliable change |
+| 5 | ridge | −0.03 | −0.89 to +0.88 | no reliable change |
+| 5 | gradient boosting | +0.30 | −0.40 to +0.81 | no reliable change |
+| 20 | ridge | −0.81 | −3.23 to +1.18 | no reliable change |
+| 20 | gradient boosting | **+0.99** | **+0.05 to +2.10** | **reliably worse** |
+
+The pre-set rule (below) needed a reliable improvement at two or more horizons. There were none, and one reliable *worsening*, so the verdict is **not supported — rejected**: the six Fibonacci candidates (ridge and gradient boosting × 3 horizons) no longer issue forecasts, and their history is kept. Against gold-only features (no chart-pattern group) Fibonacci was also never reliably better (all six intervals span zero). This is one run of about 600 overlapping dates per horizon, not proof that the idea can never work; the rule can reverse the verdict only through a code change.
+
+**What the evidence says, in prose**
 
 - **Today's settlement.** The estimate is the latest futures price; no model has beaten "price stays put" intraday. The range is the useful part: it held the real settlement **84% of the time across 121 distinct sessions (90% interval 80–87%)**, and it narrows from a typical miss of ≈$51 with 12+ hours left to ≈$3 in the last hour. The audit counts sessions, not the ~2,300 hourly rows in them, which are not independent.
 - **Forward forecasts (1/5/20 sessions).** Walk-forward errors are within about ±5% of "price unchanged" (usually worse, not better) and direction is 48–59%. No model beats the unchanged price with statistical confidence at any horizon.
 - **Do market drivers help?** (dollar, yields, real yields, S&P 500, VIX; joined by *availability time*, never by date; 589–598 identical forecast dates per horizon.) Drivers gave a statistically reliable improvement over gold-only for gradient boosting and random forest at 1 session and random forest at 20 — mostly by making over-fitting tree models lose *less* — but **nothing beat the unchanged price**, and with nine paired tests a few "significant" cells are expected by chance. A deliberately leaky same-day join scored about the same, so look-ahead is not what held the earlier experiments back. Not tested: economic-release surprises (no timestamped consensus data without a paid licence) and futures volume (continuous-contract volume is unreliable). Full tables: Model details → Market drivers.
-- **Chart patterns and Fibonacci** (first real run, data through 2026-11-17; 589–598 identical forecast dates per horizon; ridge and gradient boosting). Adding the moving-average / breakout group to the gold features changed the error by −0.5 to +0.5 points of the unchanged-price error with every 90% interval spanning zero. **Fibonacci was not supported** by the pre-set rule: no algorithm beat its no-Fibonacci twin at two or more horizons, and gradient boosting was reliably *worse* with it at 20 sessions (+0.99 points, interval +0.05 to +2.10), so its six candidates were rejected. **Still no model beats the unchanged price** at any horizon (development errors +0.0% to +5.6% against it).
+- **Chart patterns and Fibonacci** (first real run, data through 2026-11-17; 589–598 identical forecast dates per horizon; ridge and gradient boosting). Adding the moving-average / breakout group to the gold features changed the error by −0.5 to +0.5 points of the unchanged-price error with every 90% interval spanning zero. **Fibonacci was not supported** by the pre-set rule (table above), so its six candidates were rejected. **Still no model beats the unchanged price** at any horizon (development errors +0.0% to +5.6% against it).
 - **News** is archived with original and first-seen timestamps and de-duplicated, but is **not a model input**: reliable historical news is unavailable, and an LLM's memory of past headlines is not a point-in-time record. It needs months of forward data before it can be evaluated. LLM event extraction is intentionally not enabled.
-- **Range calibration, by horizon** (chronological walk-forward; each range uses only earlier information; ranges are not tuned after the fact). Historical coverage vs the claimed 80%: **1 session 80%** (90% interval 77–83), **5 sessions 79%** (74–83), **20 sessions 70%** (62–79; by period 71 / 78 / **62**), average widths 3.5% / 8.1% / 14.4% of price. The 20-session range is shown as **Under-calibrated** (more than 8 points below target) and is weakest in the most recent period.
+- **Range calibration, by horizon** (chronological walk-forward; each range uses only earlier information; ranges are not tuned after the fact). Historical coverage vs the claimed 80%: **1 session 81%** (90% interval 78–84), **5 sessions 78%** (74–83), **20 sessions 70%** (61–79; by period 71 / 79 / **61**), average widths 3.5% / 8.0% / 14.4% of price. The 20-session range is shown as **Under-calibrated** (more than 8 points below target) and is weakest in the most recent period.
 
 ## Alerts (sell-review notifications)
 
@@ -124,10 +231,31 @@ cd backend && PYTHONPATH=. .venv/bin/python -m app.worker threshold --force     
 
 **Touch probability ("will the high reach $4,100?") is a separate, experimental target**, trained on actual daily highs (the provider's daily-bar high was checked against 5-minute data: it is the CME session 18:00-17:00 New York, exact on 21 of 21 days), never derived from the settlement range. Chronological, purged walk-forward; the final slice is never used to choose anything; a probability is shown only if the distance-matched history has at least 30 distinct event dates and is calibrated. Today it is **not shown**. Details, precision/recall, false alerts, missed events, calibration and lead time are in the Alerts panel.
 
+## Verified manually vs on schedule
+
+Only what the persistent records show is claimed. Check any line yourself: `./scripts/worker.sh cycles` (full cycles), `./scripts/worker.sh status` (jobs), or query `job_runs` / `cycle_runs` in `backend/data/gold.db`.
+
+| Claim | How it was checked | Status |
+|---|---|---|
+| The worker runs as a launchd agent with no browser or web server | Installed, `status` reports runtime `launchd`; the web server was stopped for 150 s and 15 more job runs were recorded | **Verified manually** |
+| It restarts itself after a crash | `kill -9` on the worker; launchd started a new process within its 30 s throttle (pid 34408 → 34420) | **Verified manually** |
+| The ordered daily sequence works end to end on real data | One full cycle started by hand (`cycle_runs` #1, trigger `manual`, 2026-11-18 18:44 UTC, 60 s): collect, validate, score, learn, nowcast, threshold and alerts all `ok`; paper `skipped` because no paper book existed yet (it was created seconds later) | **Verified manually** (not by the schedule) |
+| Recurring jobs run on their own cadence | `job_runs` holds thousands of self-triggered rows from the background worker (the web-embedded one first, then launchd): spot every 10 s (over 4,000 ok), score every 30 min, alerts and paper every 2 min, nowcast hourly | **Observed on schedule** |
+| **The daily full cycle fires at 23:30 UTC** | `cycle_runs` has **no** row with trigger `scheduled` yet; the first is due **2026-11-18 23:30 UTC**. Not claimed until `./scripts/worker.sh cycles` reports one with status `ok` | **Not yet observed** |
+| Catch-up after a restart or sleep | Covered by unit tests (a catch-up is recorded as `catch-up`, never as `scheduled`); never exercised by a real sleep | **Tested in code only** |
+| A matured forward outcome improves a model | There are **0** matured forward forecasts (123 logged); the first target settlements arrive from 18 Nov | **Nothing to show yet** |
+| Container deployment, n8n and SMS | `deploy/` files were never built or run; n8n was never imported and no SMS was ever sent | **Untested** |
+
+**Earlier schedule evidence, deliberately not counted.** `job_runs` also shows `collect`, `learn` and `threshold` starting at 23:30:00–23:30:05 UTC on 17 Nov. That was the previous embedded web-server worker, before the `cycle_runs` table and the current sequence existed, so it is not a recorded cycle and is not used as proof of the current one.
+
+**Failures on record** (kept, not erased): `nowcast` 2026-11-18 05:13 UTC `ReadError` and `spot` 10:57 UTC `ConnectError` (provider unreachable; each recovered on the next run); `threshold` 06:57 UTC `KeyError: 'dxy_chg1'` (market-driver columns; the two later threshold runs succeeded, and the cause was not investigated further).
+
+**How the first scheduled cycle will be confirmed.** After 23:30 UTC with the Mac awake and online, run `./scripts/worker.sh cycles`. A line reading `1 scheduled cycle(s) recorded with status ok` plus a row with `scheduled` and all eight steps is the confirmation. If it says `No scheduled cycle has been recorded yet`, it did not run (for example because the Mac slept), whatever this README says.
+
 ## Development
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q          # 255 tests
+cd backend && .venv/bin/python -m pytest -q          # 256 tests
 cd frontend && npx tsc --noEmit && npm run build && node --test src/labels.test.mjs src/ranges.test.mjs   # type check, build, unit tests
 cd e2e && URL=http://127.0.0.1:8750 OUT=./shots node verify.mjs   # 76 browser checks: Predict flow, all horizons, states, export, desktop + 390px
 bash e2e/run_alerts.sh                                            # 54 alert checks (throwaway data, simulated prices, no SMS)
