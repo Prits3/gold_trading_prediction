@@ -10,6 +10,7 @@ PYTHONPATH=. .venv/bin/python - <<PY
 import time
 from app import alerts, alerts_sim, n8n_link, db
 now = time.time()
+alerts.save_settings({"position_status": "open"}, now)               # these checks exercise the entry-price comparisons, which only apply to an OPEN position (the closed default is covered by run_pages.sh)
 alerts_sim.issue_sim_forecast(4120.0, now)                       # a simulated next-session forecast above both levels
 alerts.check_forecasts(now)
 alerts.check_price(now, quote={"price": 4101.0, "as_of": now - 120, "source": "simulated", "instrument": alerts.INSTRUMENT_NAME, "basis": "futures"})

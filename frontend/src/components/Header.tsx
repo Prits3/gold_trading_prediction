@@ -3,7 +3,7 @@ import { fmtEt } from "../format";
 
 export type PageId = "forecast" | "learning" | "paper" | "alerts";
 export const PAGES: { id: PageId; label: string }[] = [
-  { id: "forecast", label: "Forecast" }, { id: "alerts", label: "Alerts & settings" },
+  { id: "forecast", label: "Forecast" }, { id: "learning", label: "Learning" }, { id: "paper", label: "Paper trading" }, { id: "alerts", label: "Alerts & settings" },
 ];
 
 export function statusOf(s: MarketSummary | null, conn: Conn): { cls: string; label: string } {

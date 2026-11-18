@@ -71,7 +71,9 @@ def _audit_conflict(fid: str, data_key: str | None, dataset_hash: str | None, pr
     if not old:
         return
     o = old[0]
-    differs = (dataset_hash and o["dataset_hash"] and dataset_hash != o["dataset_hash"]) or (data_key and o["data_key"] and data_key != o["data_key"]) or abs(o["predicted"] - predicted) > 0.005
+    # Only a different INPUT SNAPSHOT counts. A next-settlement re-issue within the same hour differs only because the quote ticked: that is the normal
+    # "first forecast of the hour stands" rule, not a conflict.
+    differs = (dataset_hash and o["dataset_hash"] and dataset_hash != o["dataset_hash"]) or (data_key and o["data_key"] and data_key != o["data_key"])
     if not differs:
         return
     detail = json.dumps({"kept": {"data_key": o["data_key"], "dataset_hash": o["dataset_hash"], "predicted": o["predicted"]},

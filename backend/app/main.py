@@ -506,6 +506,12 @@ def learning_workspace():
     return workspace.payload()
 
 
+@app.get("/api/worker")
+def worker_status():
+    """Which runtime is operating, its heartbeat, last runs and next scheduled jobs (read-only; the worker itself exposes nothing)."""
+    return worker.status()
+
+
 @app.get("/api/quality")
 def data_quality():
     return quality.summary(40)

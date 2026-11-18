@@ -91,7 +91,7 @@ function TouchBlock({ t, levels }: { t: TouchPanel; levels: number[] }) {
 
 export function AlertsPanel() {
   const { data, error, refresh } = usePoll<AlertsPayload>(api.alerts, 30000, "alerts");
-  const [draft, setDraft] = useState<{ levels: string; entry: string; time: string; tz: string } | null>(null);
+  const [draft, setDraft] = useState<{ levels: string; entry: string; time: string; tz: string; exit: string; closedAt: string; reason: string } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -99,7 +99,8 @@ export function AlertsPanel() {
   const [basisErr, setBasisErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (data && !dirty) setDraft({ levels: data.settings.levels.join(", "), entry: data.settings.entry_price != null ? String(data.settings.entry_price) : "", time: data.settings.morning_time, tz: data.settings.morning_tz });
+    if (data && !dirty) setDraft({ levels: data.settings.levels.join(", "), entry: data.settings.entry_price != null ? String(data.settings.entry_price) : "", time: data.settings.morning_time, tz: data.settings.morning_tz,
+      exit: data.settings.exit_price != null ? String(data.settings.exit_price) : "", closedAt: data.settings.closed_at ?? "", reason: data.settings.closure_reason ?? "" });
   }, [data, dirty]);
 
   const save = async (patch: Partial<AlertSettings>, okText = "Saved.") => {
@@ -114,7 +115,10 @@ export function AlertsPanel() {
     if (!levels.length || levels.some((x) => !Number.isFinite(x))) { setNote({ kind: "err", text: "Review levels must be numbers, such as 4000, 4100." }); return; }
     const entry = draft.entry.trim() === "" ? null : Number(draft.entry);
     if (entry !== null && !Number.isFinite(entry)) { setNote({ kind: "err", text: "Entry price must be a number." }); return; }
-    void save({ levels, entry_price: entry, morning_time: draft.time, morning_tz: draft.tz }, "Saved. The new levels and morning time are handed to n8n.");
+    const exit = draft.exit.trim() === "" ? null : Number(draft.exit);
+    if (exit !== null && !Number.isFinite(exit)) { setNote({ kind: "err", text: "Exit price must be a number." }); return; }
+    const closed = data?.settings.position_status === "closed";
+    void save({ levels, entry_price: entry, morning_time: draft.time, morning_tz: draft.tz, ...(closed ? { exit_price: exit, closed_at: draft.closedAt.trim() || null, closure_reason: draft.reason.trim() || null } : {}) }, "Saved. The new levels and morning time are handed to n8n.");
   };
   const loadBasis = async () => {
     if (basis) return;
@@ -149,14 +153,28 @@ export function AlertsPanel() {
             <label>Review levels (USD per troy oz)
               <input className="gx-input mono" value={draft?.levels ?? ""} onChange={(e) => { setDraft({ ...draft!, levels: e.target.value }); setDirty(true); }} data-testid="in-levels" inputMode="decimal" />
             </label>
-            <label>Entry price
+            <label>{s.position_status === "open" ? "Entry price" : "Last entry price (history)"}
               <input className="gx-input mono" value={draft?.entry ?? ""} onChange={(e) => { setDraft({ ...draft!, entry: e.target.value }); setDirty(true); }} data-testid="in-entry" inputMode="decimal" />
             </label>
           </div>
           <ul className="gx-lvls" data-testid="levels">
             {data.levels.map((l) => <li key={l.level}><b className="mono">{lv(l.level)}</b>{l.note && <span className={`gx-chip ${l.note.startsWith("Below") ? "below" : "base"}`}>{l.note}</span>}</li>)}
           </ul>
-          <p className="gx-micro" data-testid="entry-note">Entry {s.entry_price != null ? usd(s.entry_price) : "not set"} is taken as entered; its instrument is not verified. {data.labels.entry_note}</p>
+          <div className="gx-position" data-testid="position">
+            <label>Tracked Trading 212 position
+              <select className="gx-input" value={s.position_status} disabled={busy} onChange={(e) => void save({ position_status: e.target.value as AlertSettings["position_status"] }, "Saved.")} data-testid="in-position">
+                <option value="closed_unconfirmed">Closed (unconfirmed)</option><option value="closed">Closed (I will enter what I know)</option><option value="open">Open</option>
+              </select>
+            </label>
+            <p className="gx-micro" data-testid="entry-note">{data.position.note}{s.entry_price != null ? ` Last entry recorded: ${usd(s.entry_price)} (as entered; its instrument is not verified).` : ""} {s.position_status === "open" ? data.labels.entry_note : "Review levels below are plain price levels, not comparisons with a position."}</p>
+            {s.position_status === "closed" && (
+              <div className="gx-field-row" data-testid="closure-fields">
+                <label>Exit price (optional)<input className="gx-input mono" value={draft?.exit ?? ""} onChange={(e) => { setDraft({ ...draft!, exit: e.target.value }); setDirty(true); }} inputMode="decimal" data-testid="in-exit" /></label>
+                <label>Closed on (optional)<input className="gx-input" value={draft?.closedAt ?? ""} placeholder="e.g. 2026-11-17" onChange={(e) => { setDraft({ ...draft!, closedAt: e.target.value }); setDirty(true); }} data-testid="in-closed-at" /></label>
+                <label>Reason (optional, yours)<input className="gx-input" value={draft?.reason ?? ""} onChange={(e) => { setDraft({ ...draft!, reason: e.target.value }); setDirty(true); }} data-testid="in-reason" /></label>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -212,7 +230,7 @@ export function AlertsPanel() {
           </>
         )}
       </details>
-      <p className="gx-micro">SMS links open a private, expiring review page with the forecast, the latest quote, your entry price and a link to Trading 212. Times in this panel are New York; the morning SMS uses {s.morning_tz}.</p>
+      <p className="gx-micro">SMS links open a private, expiring review page with the forecast, the latest quote, your tracked position status and a link to Trading 212. Times in this panel are New York; the morning SMS uses {s.morning_tz}.</p>
     </section>
   );
 }

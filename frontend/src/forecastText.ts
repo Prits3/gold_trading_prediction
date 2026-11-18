@@ -46,7 +46,6 @@ export function coverageLine(f: FrozenForecast, c?: CalibrationInfo): { text: st
 export const resultLine = (r?: ForecastResult | null) =>
   r?.matured ? `Actual ${usd(r.actual!)}, off by $${num(r.abs_error!)}${r.in_range != null ? (r.in_range ? ", inside the range" : ", outside the range") : ""}.` : "The target time has passed; the official figure is not posted yet.";
 
-/** Which history ranges can show a forecast to this target without being mostly blank or hiding the origin. */
-export const FIT_RANGES: Record<string, string[]> = { next: ["1D", "1W"], "1": ["1W", "1M", "3M"], "5": ["3M", "1Y"], "20": ["3M", "1Y"] };
-export const DEFAULT_RANGE: Record<string, string> = { next: "1D", "1": "1M", "5": "3M", "20": "3M" };
+export { DEFAULT_RANGE, FIT_RANGES } from "./ranges";
+export { rangesFor } from "./ranges";
 export const FORECAST_FOOT = "The dashed line only connects the forecast reference to the target; it is illustrative and is not a predicted path. The bar at the target is the forecast range.";

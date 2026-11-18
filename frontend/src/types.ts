@@ -115,7 +115,6 @@ export interface TaskStatus {
   challengers: { version: string; status: string; last_trained_at: number | null; forward: ForwardStats }[];
 }
 export interface Decision { id: number; at: number; task: string; kind: string; champion_before: string | null; champion_after: string | null; decision: string; reason: string }
-export interface WorkerStatus { daemon_running: boolean; heartbeat_age_s: number | null; jobs: Record<string, { last: { status: string; detail: string | null } | null; last_ok: number | null; age_s: number | null }>; forecasts: number; matured: number; spot_ticks: number; cycle_overdue: boolean }
 export interface DriversResearch {
   ran_at: string; data_through: string; driver_errors: Record<string, string>; duration_s: number;
   horizons: Record<string, { n_origins: number; oos_start: string; oos_end: string; paired_drivers_vs_gold_only: Record<string, { delta_pct_of_baseline_mae: number; ci90: [number, number] }>;
@@ -199,6 +198,7 @@ export interface ForwardPayload {
 // ------------------------------------------------------------------------------------------------ alerts
 export interface AlertSettings {
   forecast_alerts: boolean; price_alerts: boolean; levels: number[]; entry_price: number | null; position_size: number | null; quote_basis: "futures" | "spot";
+  position_status: "open" | "closed_unconfirmed" | "closed"; exit_price: number | null; closed_at: string | null; closure_reason: string | null;
   immediate_sms: boolean; price_sms: boolean; morning_enabled: boolean; morning_time: string; morning_tz: string; rearm: "next_session" | "after_drop";
 }
 export interface AlertDelivery { id: number; kind: string; mode: string; state: string; provider_sid: string | null; accepted_at: number | null; delivered_at: number | null; detail: string | null }
@@ -225,9 +225,71 @@ export interface AlertsPayload {
   delivery: { mode: "simulate" | "live"; configured: boolean; missing: string[]; note: string; review_base: string };
   last_handoff: { at: number; state: string; detail: string } | null; log: { at: number; topic: string; outcome: string; detail: string | null }[];
   labels: { forecast_kind: string; entry_note: string }; touch: TouchPanel;
+  position: PositionInfo;
 }
+export interface PositionInfo { status: "open" | "closed_unconfirmed" | "closed"; entry_price: number | null; exit_price: number | null; closed_at: string | null; closure_reason: string | null; note: string }
 export interface BasisCheck {
   levels_apply_to: { instrument: string; currency: string; unit: string; forecast_target: string; price_alert_quote: string; price_alert_quote_note: string };
   currency_checked: string; quotes: Record<string, { price?: number; as_of?: number; age_min?: number; source?: string; error?: string }>;
   spot_minus_futures: number | null; entry_price: { value: number | null; verified: boolean; note: string }; warnings: string[];
+}
+
+// ---------------------------------------------------------------------------------------------- learning workspace, worker, paper
+export interface WorkerJob { last: { status: string; started_at: number; finished_at: number | null; detail: string | null } | null; last_ok: number | null; age_s: number | null; failures: number; last_error: string | null; next_retry_at: number | null; at_retry_limit: boolean }
+export interface NextRun { job: string; every_s: number; next_at: number; backing_off: boolean; failures: number; at_retry_limit: boolean }
+export interface CycleStep { step: string; status: "ok" | "failed" | "skipped"; seconds: number; detail: unknown }
+export interface CycleRun { id: number; started_at: number; finished_at: number | null; trigger: string; runtime: string | null; data_through: string | null; status: string; steps: CycleStep[] }
+export interface WorkerStatus {
+  daemon_running: boolean; heartbeat_age_s: number | null; runtime: string | null; host: string | null; pid: number | null; runtime_note: string; launchd_installed: boolean;
+  jobs: Record<string, WorkerJob>; next_runs: NextRun[]; last_cycle: CycleRun | null; session_gap: { expected_last_session: string; data_through: string; sessions_behind: number; stale: boolean } | null;
+  forecasts: number; matured: number; spot_ticks: number; cycle_overdue: boolean;
+}
+export interface WsDev { mae_vs_baseline_pct: number; p_value_vs_baseline: number | null; coverage_pct: number | null; mean_width_pct: number | null; n_origins: number; data_through: string }
+export interface WsCandidate {
+  version: string; algorithm: string; feature_schema: string; status: string; note: string | null; development: WsDev | null;
+  forward: { n_matured: number; distinct_origins: number; effective_blocks: number; mae_vs_baseline_pct: number | null };
+  last_attempt: { status: string; at: number; detail: string | null } | null; last_decision: { at: number; decision: string; reason: string } | null;
+}
+export interface WsSeries { dates: string[]; base: number[]; actual: number[]; pred: number[]; low: number[]; high: number[] }
+export interface WsTask {
+  task: string; label: string; horizon: number;
+  active: { version: string; algorithm: string; feature_schema: string; status_changed_at: number; last_trained_at: number | null; trained_through: string | null; notes: string | null; is_unchanged_baseline: boolean };
+  production_note: string; baseline_version: string;
+  development: { label: string; metrics: (WsDev & Record<string, number | number[] | string | null>) | null; series: WsSeries | null;
+    rolling: { window?: number; dates: string[]; model: number[]; unchanged: number[] };
+    trend: { points: { data_through: string; mae_vs_baseline_pct: number; coverage_pct: number | null; mean_width_pct: number | null; n_origins: number }[]; verdict: "first_run" | "unchanged" | "improved" | "worsened"; text: string } };
+  forward: { label: string; n_matured: number; distinct_origins: number; distinct_targets: number; effective_blocks: number; blocks_needed: number; mae: number | null; baseline_mae: number | null;
+    mae_vs_baseline_pct: number | null; coverage_pct: number | null; mean_width_pct: number | null;
+    history: { base_time: string; target_date: string; predicted: number; base_price: number; low: number | null; high: number | null; actual: number; in_range: number | null; abs_error: number; baseline_abs_error: number }[] };
+  candidates: WsCandidate[]; decisions: { id: number; at: number; kind: string; decision: string; reason: string; champion_after: string | null }[];
+  range: { development_coverage_pct: number | null; development_width_pct: number | null; forward_coverage_pct: number | null; forward_width_pct: number | null; target_pct: number };
+}
+export interface FibCompare { n_origins: number; delta_pct_of_baseline_mae: number; ci90: [number, number]; a_vs_unchanged_pct: number; b_vs_unchanged_pct: number }
+export interface FeatureGroups {
+  evaluated: boolean; rule: string; data_through?: string; evaluated_at?: number; verdict?: { status: "supported" | "not_supported" | "insufficient"; reason: string; rule: string };
+  comparisons?: Record<string, Record<string, Record<string, FibCompare>>>; rejected?: string[]; volume_note?: string;
+}
+export interface QualityFinding { detected_at: number; source: string; kind: string; key: string; detail: string; status: string }
+export interface WorkspacePayload {
+  worker: WorkerStatus; tasks: Record<string, WsTask>; feature_groups: FeatureGroups;
+  attempts: { recent: { at: number; task: string; version: string; stage: string; status: string; data_through: string | null; duration_s: number | null; detail: string | null }[]; ok: number; failed: number };
+  cycles: CycleRun[]; quality: { by_status: Record<string, number>; by_kind: Record<string, number>; blocking: QualityFinding[]; recent: QualityFinding[] };
+  ledger_audit: { conflicts: number; recent: { at: number; forecast_id: string; kind: string; detail: string }[] }; promotion_rule: string[]; totals: { issued: number; matured: number };
+}
+export interface PaperParams { task: string; role: string; min_net_edge_bps: number; spread_bps: number; slippage_bps: number; commission_per_oz: number; max_position_pct: number; stop_loss_pct: number; max_daily_loss_pct: number; max_drawdown_pct: number; max_trades_per_day: number; cooldown_minutes: number; quote_max_age_min: number }
+export interface PaperPerf {
+  initial_cash: number; cash: number; qty: number; avg_entry: number | null; mark: number | null; equity: number; return_pct: number; realised_pnl: number; unrealised_pnl: number; fees: number;
+  n_trades: number; n_fills: number; win_rate_pct: number | null; max_drawdown_pct: number | null; exposure_pct: number | null;
+  hold: { equity: number; return_pct: number; start_price: number } | null; cash_only: { equity: number; return_pct: number }; curve: { ts: number; book: number; hold: number; cash: number }[];
+}
+export interface PaperBook {
+  id: number; name: string; status: "active" | "paused" | "archived"; paused_reason: string | null; created_at: number; initial_cash: number; params: PaperParams; performance: PaperPerf;
+  accuracy: { task: string; role: string; n_matured: number | null; n_sessions: number | null; mae: number | null; baseline_mae: number | null; mae_vs_baseline_pct: number | null; coverage_pct: number | null };
+  fills: { id: number; ts: number; side: string; qty: number; price: number; cost: number; forecast_id: string | null; rationale: string; reason: string }[];
+  trades: { forecast_id: string | null; entry_ts: number; exit_ts: number; qty: number; entry: number; exit: number; pnl: number; exit_reason: string; rationale: string }[];
+  events: { ts: number; kind: string; detail: string; forecast_id: string | null }[];
+}
+export interface PaperPayload {
+  simulation_only: boolean; notice: string; defaults: PaperParams; limits: Record<string, [number, number]>; book: PaperBook | null;
+  books: { id: number; name: string; status: string; created_at: number; archived_at: number | null; initial_cash: number; return_pct: number; n_trades: number }[];
 }

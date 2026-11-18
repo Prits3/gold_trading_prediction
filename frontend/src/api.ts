@@ -1,4 +1,4 @@
-import type { AlertSettings, AlertsPayload, BasisCheck, DriversPanel, ForwardPayload, GldComparison, Horizon, InstrumentKey, LearningPayload, MarketSummary, NewsPayload, OhlcPayload, Prediction, PricePayload, RangeKey, TodayPayload } from "./types";
+import type { PaperParams, PaperPayload, WorkerStatus, WorkspacePayload, AlertSettings, AlertsPayload, BasisCheck, DriversPanel, ForwardPayload, GldComparison, Horizon, InstrumentKey, LearningPayload, MarketSummary, NewsPayload, OhlcPayload, Prediction, PricePayload, RangeKey, TodayPayload } from "./types";
 
 export class ApiError extends Error {
   code: string;
@@ -50,5 +50,14 @@ export const api = {
   saveAlerts: (patch: Partial<AlertSettings>) => request<AlertsPayload>("/api/alerts/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }),
   alertsBasis: () => request<BasisCheck>("/api/alerts/basis"),
   exportForecastUrl: (forecastId: string) => `/api/forecast/export?forecast_id=${encodeURIComponent(forecastId)}`,
+  workspace: () => request<WorkspacePayload>("/api/learning/workspace"),
+  worker: () => request<WorkerStatus>("/api/worker"),
+  paper: () => request<PaperPayload>("/api/paper"),
+  paperNewBook: (body: { name?: string; initial_cash?: number }) => request<unknown>("/api/paper/book", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  paperParams: (id: number, patch: Partial<PaperParams>) => request<unknown>(`/api/paper/book/${id}/params`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }),
+  paperPause: (id: number) => request<unknown>(`/api/paper/book/${id}/pause`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }),
+  paperResume: (id: number) => request<unknown>(`/api/paper/book/${id}/resume`, { method: "POST" }),
+  paperFlatten: (id: number) => request<unknown>(`/api/paper/book/${id}/flatten`, { method: "POST" }),
+  paperEvaluate: () => request<unknown>("/api/paper/evaluate", { method: "POST" }),
   downloadUrl: (h: Horizon, key: string) => `/api/predict/download?horizon=${h}&key=${encodeURIComponent(key)}`,
 };

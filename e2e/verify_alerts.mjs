@@ -33,7 +33,7 @@ async function session(viewport, label) {
   check(`${label}: both alert types are separate switches with plain wording`, /Forecast heads-up/.test(txt) && /Actual-price crossing/.test(txt) && /Not a touch of the level/.test(txt) && /observed futures quote/.test(txt));
   const lv = await T(page, "levels");
   check(`${label}: review levels 4,000 and 4,100 are shown; 4,000 is labelled "Below entry price"`, /\$4,000\s*Below entry price/.test(lv) && /\$4,100\s*Above entry price/.test(lv), lv);
-  check(`${label}: entry price is shown as entered and unverified; no profit figure`, /4,039\.96 is taken as entered; its instrument is not verified/.test(await T(page, "entry-note")) && !/profit[^.]*\$\d/i.test(txt) && /Profit is not computed/.test(txt));
+  check(`${label}: entry price is shown as entered and unverified; no profit figure`, /\$4,039\.96 \(as entered; its instrument is not verified\)/.test(await T(page, "entry-note")) && !/profit[^.]*\$\d/i.test(txt) && /Profit is not computed/.test(txt));
   check(`${label}: delivery mode is plainly 'Simulation · no SMS sent'`, /Simulation · no SMS sent/.test(await T(page, "delivery-mode")));
   check(`${label}: morning SMS time and zone default to 07:30 Europe/Berlin`, (await page.inputValue('[data-testid="in-time"]')) === "07:30" && (await page.inputValue('[data-testid="in-tz"]')) === "Europe/Berlin");
 

@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { usePoll } from "./hooks";
 import type { Conn, ForwardPayload, InstrumentKey, RangeKey, TodayPayload } from "./types";
-import { DEFAULT_RANGE, FIT_RANGES, type ForecastTarget, type Shown } from "./forecastText";
+import { rangesFor, type ForecastTarget, type Shown } from "./forecastText";
 import { Header, PAGES, type PageId } from "./components/Header";
 import { PriceSummary } from "./components/PriceSummary";
 import { ChartCard } from "./components/ChartCard";
 import { ResultStrip } from "./components/ResultStrip";
 import { AlertsPage } from "./components/AlertsPage";
+import { LearningPage } from "./components/LearningPage";
+import { PaperPage } from "./components/PaperPage";
 import { Drawer, type DrawerTab } from "./components/Drawer";
 
 function useStored<T extends string | boolean | number>(key: string, init: T): [T, (v: T) => void] {
@@ -63,7 +65,8 @@ export default function App() {
       const p = await fetchTarget(target);
       if (!p.forecast) { setShown(null); setPredictErr(p.message ?? "No forecast is available for this target yet."); return; }
       // Predict fits the view to the forecast. Only if the current history range cannot show this target well is the range changed.
-      if (!(FIT_RANGES[String(target)] ?? []).includes(range)) setRange((DEFAULT_RANGE[String(target)] ?? "1M") as RangeKey);
+      const fit = rangesFor(target, p.forecast);
+      if (!fit.allowed.includes(range)) setRange(fit.dflt as RangeKey);
       setShown({ target, payload: p, fetchedAt: Date.now() });
       setFitToken((n) => n + 1);
     } catch (e) { setPredictErr(`Could not get the forecast: ${msg(e)}`); }
@@ -93,6 +96,8 @@ export default function App() {
           <button className="gx-link" onClick={() => openDetails()} data-testid="open-details-2">Details: model, methodology, drivers & backtests →</button>
         </div>
       )}
+      {page === "learning" && <LearningPage />}
+      {page === "paper" && <PaperPage />}
       {page === "alerts" && <AlertsPage onDataChanged={() => setDataRev((n) => n + 1)} />}
 
       <footer className="gx-footer">
