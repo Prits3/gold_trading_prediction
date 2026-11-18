@@ -1,44 +1,77 @@
-<h1 align="center">Gold Outlook</h1>
+<h1 align="center">GOLD OUTLOOK</h1>
+<h3 align="center">One metal. Four horizons. Show your work.</h3>
 
-<p align="center"><b>Choose a horizon, press Predict, read the forecast on the chart.</b><br>
-A gold-futures forecasting workspace that measures itself honestly: every forecast is stored before its outcome exists, and the app shows whether the models are really improving.</p>
+<p align="center">A gold-futures forecasting workspace. Every forecast is stored <i>before</i> its outcome exists, the models retrain in the background, and the app tells you plainly when the evidence says "no advantage".</p>
 
 <p align="center">
-  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776ab?logo=python&logoColor=white">
-  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white">
-  <img alt="React + TypeScript" src="https://img.shields.io/badge/React-TypeScript-3178c6?logo=react&logoColor=white">
-  <img alt="SQLite ledger" src="https://img.shields.io/badge/SQLite-immutable%20ledger-003b57?logo=sqlite&logoColor=white">
-  <img alt="Runs locally" src="https://img.shields.io/badge/runs-locally%20(launchd%20worker)-555">
-  <img alt="Not investment advice" src="https://img.shields.io/badge/not-investment%20advice-b45309">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI 0.162" src="https://img.shields.io/badge/FastAPI-0.162-009688?logo=fastapi&logoColor=white">
+  <img alt="scikit-learn 1.9" src="https://img.shields.io/badge/scikit--learn-1.9-F7931E?logo=scikitlearn&logoColor=white">
+  <img alt="React 18 + TypeScript" src="https://img.shields.io/badge/React%2018-TypeScript-3178C6?logo=typescript&logoColor=white">
+  <img alt="SQLite ledger" src="https://img.shields.io/badge/SQLite-immutable%20ledger-003B57?logo=sqlite&logoColor=white">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-266%20backend%20%C2%B7%20190%20browser-2EA44F">
+  <img alt="Not investment advice" src="https://img.shields.io/badge/not-investment%20advice-B45309">
 </p>
 
-<p align="center">
-  <a href="#start"><b>Quick start</b></a> ·
+<p align="center"><b>
+  <a href="#start">Quick start</a> ·
+  <a href="#the-workflow">Workflow</a> ·
   <a href="#the-screen">The app</a> ·
   <a href="#how-learning-works">How it learns</a> ·
   <a href="#current-measured-results">Results</a> ·
   <a href="#verified-manually-vs-on-schedule">What is verified</a> ·
   <a href="#development">Development</a>
-</p>
+</b></p>
 
 <p align="center">
-  <img src="docs/screenshots/forecast-demo.gif" alt="Demo: choose Next settlement, 5 or 20 sessions, press Predict; the forecast is drawn on the same chart; switch to Line; hide the forecast; open the Details tabs" width="860"><br>
-  <sub>Recorded from the running app with live data: choose a horizon → <b>Predict</b> → the stored forecast is drawn on the same chart → Line / Candles → Hide → Details tabs.</sub>
+  <img src="docs/screenshots/forecast-demo.gif" alt="Demo: choose Next settlement, 5 or 20 sessions, press Predict; the forecast is drawn on the same chart; switch to Line; hide the forecast; open the Details tabs" width="900"><br>
+  <sub>Recorded from the running app with live data. Choose a horizon → <b>Predict</b> → the stored forecast is drawn on the same chart → Line / Candles → Hide → Details tabs.</sub>
 </p>
 
 > [!IMPORTANT]
-> **It does not predict gold reliably, and it says so.** Daily gold behaves close to a random walk. Across every horizon tested, **no model beats "the price stays put"**, and there are **0 matured forward forecasts** so far, so nothing here shows the app is improving yet. What it does do is record the evidence needed to find out. See [Current measured results](#current-measured-results).
+> **It does not predict gold reliably, and it says so.** Daily gold behaves close to a random walk. At every horizon tested, **no model beats "the price stays put"**, and there are **0 matured forward forecasts** so far, so nothing here shows the app is improving yet. What it does is record the evidence needed to find out. See [Current measured results](#current-measured-results).
+
+---
+
+## The workflow
+
+| | |
+|---|---|
+| **1. Pick a horizon.** *Next settlement*, *1*, *5* or *20 sessions* for COMEX gold futures (GC=F, USD per troy oz). | **2. Press Predict.** The stored forecast is drawn on the *same* chart: origin marker, illustrative connector, target dot with price and date, and the 80% range at the target. |
+| **3. Read the card.** Price, projected change, target session, range with its historical coverage, **what produced the number**, when it was issued and which data it used. | **4. Check the receipts.** The Backtest, Market drivers, GLD, Methodology and Model tabs sit right under the chart; the Learning page shows the evidence per horizon. |
+| **5. Let it learn.** A background worker collects, validates, scores, retrains bounded models and records every decision, with the browser closed. | **6. Paper-trade it.** A gold-only simulated book with deterministic risk limits, compared with holding gold and with cash. No broker, no live orders. |
+
+<table>
+<tr>
+<td width="68%"><img src="docs/screenshots/learning-tour.gif" alt="Scrolling tour of the Learning page: worker status, scheduled-cycle record, active model per horizon, forward versus walk-forward evidence, candidates and the Fibonacci comparison"></td>
+<td width="32%"><img src="docs/screenshots/mobile-demo.gif" alt="Phone-sized Predict flow: choose 20 sessions, press Predict, read the card and open the tabs"></td>
+</tr>
+<tr>
+<td><sub><b>Learning page:</b> the worker, the scheduled-cycle record, the active model per horizon, forward vs walk-forward evidence, every candidate.</sub></td>
+<td><sub><b>On a phone (390 px):</b> the same workspace, stacked.</sub></td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/paper.png" alt="Paper trading: a simulated gold book, risk limits, comparison with hold and cash"></td>
+<td width="50%"><img src="docs/screenshots/alerts-settings.png" alt="Alerts and settings: tracked position, background service status, data sources"></td>
+</tr>
+<tr>
+<td><sub><b>Paper trading:</b> simulated, gold only, deterministic limits.</sub></td>
+<td><sub><b>Alerts &amp; settings:</b> sell-review levels, the background service, data sources.</sub></td>
+</tr>
+</table>
 
 ## At a glance
 
 | | |
 |---|---|
-| **Forecast** | Next settlement, 1, 5 and 20 sessions for COMEX gold futures (GC=F, USD per troy oz), each with an 80% range and its historical coverage |
+| **Forecast** | Next settlement, 1, 5 and 20 sessions, each with an 80% range and its historical coverage |
 | **Learn** | A daily loop that collects, validates, scores, retrains bounded models, records every decision and promotes nothing without evidence |
 | **Audit** | Immutable forecast ledger (the database rejects edits), write-once outcomes, dataset hashes, quarantine instead of deletion |
-| **Paper trade** | A gold-only simulated book with deterministic risk limits; no broker, no live orders |
+| **Operate** | A launchd worker that keeps running with the browser closed; needs the Mac awake and online |
 | **Alerts** | Sell-review price-level alerts via n8n + Twilio (simulation by default; nothing is sent until you configure it) |
-| **Operate** | A launchd background worker that keeps running with the browser closed; needs the Mac awake and online |
 
 <details>
 <summary><b>Status in one paragraph</b> (click to expand)</summary>
@@ -49,16 +82,15 @@ The background worker runs under launchd and has been observed recording jobs, s
 
 ## Contents
 
-- [Start](#start): run it, install the background worker, command cheat sheet
+- [Start](#start): run it, install the worker, command cheat sheet
 - [How the pieces fit](#how-the-pieces-fit)
 - [The screen](#the-screen): the four pages and what *Next settlement* shows
-- [Data sources and their real delays](#data-sources-and-their-real-delays)
 - [How learning works](#how-learning-works): candidates, promotion, rollback, learning from outcomes
-- [Paper trading](#paper-trading-simulation-only) and [local-only API calls](#state-changing-api-calls-are-local-only)
 - [Current measured results](#current-measured-results): every model, including the rejected Fibonacci candidates
-- [Alerts](#alerts-sell-review-notifications)
 - [Verified manually vs on schedule](#verified-manually-vs-on-schedule)
-- [Development](#development)
+- [Paper trading](#paper-trading-simulation-only), [Alerts](#alerts-sell-review-notifications), [Data sources](#data-sources-and-their-real-delays), [Development](#development)
+
+*Sections open as accordions: click a summary to expand it.*
 
 ## Start
 
@@ -81,6 +113,9 @@ PORT=9000 ./start.sh       # another port
 The web app starts an in-process background worker **only if no standalone worker is running**. For jobs that keep running with the browser, server and terminal closed, install the standalone worker (below).
 
 ### Background worker (macOS)
+
+<details>
+<summary><b>Install, status, logs, restart, uninstall</b></summary>
 
 ```bash
 ./scripts/worker.sh install     # per-user launchd agent; idempotent, starts at login, restarts after a crash
@@ -116,7 +151,12 @@ Logs: `~/Library/Logs/gold-outlook/worker.err.log` (the worker's Python log, whi
 
 </details>
 
+</details>
+
 ### The daily loop
+
+<details>
+<summary><b>The loop, its steps and how failures are handled</b></summary>
 
 ```mermaid
 flowchart LR
@@ -148,7 +188,12 @@ flowchart LR
 
 Every step of a cycle is recorded and one failing step never stops the rest (a failed collect still lets alerts and paper run). Jobs have persistent state with bounded back-off (30 s, 2 min, 10 min, then hourly) and a retry limit of 4 in a row; a scheduled or manual cycle starts every job fresh.
 
+</details>
+
 ### Schedule, time zone, and what the Mac must be doing
+
+<details>
+<summary><b>Schedule, time zone and requirements</b></summary>
 
 | Job | When |
 |---|---|
@@ -161,6 +206,8 @@ Every step of a cycle is recorded and one failing step never stops the rest (a f
 | Spot price recording | every 10 s |
 
 **Requirements.** The Mac must be **awake and online** at the time. launchd starts the worker at login and restarts it after a crash (30 s throttle); it does **not** wake a sleeping Mac. During sleep nothing is collected: spot ticks and hourly intraday forecasts missed in that time are not reconstructed and remain visible gaps. After waking, the 5-minute learning check notices that a completed session is missing, re-downloads and runs the sequence once the data is there, and if the worker is restarted when learning is more than 26 h old it runs a full **catch-up** cycle immediately. A catch-up is recorded as `catch-up`, never as `scheduled`. For hosting that does not depend on this Mac see [deploy/README.md](deploy/README.md) (written but **not built or run**).
+
+</details>
 
 ## How the pieces fit
 
@@ -191,6 +238,9 @@ Four pages (hash routes: `#/forecast`, `#/learning`, `#/paper`, `#/alerts`). The
 - **Chart** ([TradingView Lightweight Charts™](https://www.tradingview.com/), Apache-2.0, attribution shown): real OHLC candles or a 2px line with light shading, the candle/point interval stated, hover readout, one latest-price marker. Labels on a forecast are collision-resolved and never clip. Provider and session detail sits behind the ⓘ button.
 
 ### What "Next settlement" shows, and what is a fallback
+
+<details open>
+<summary><b>Which model can forecast the next settlement, and what is a fallback</b></summary>
 
 The official close is the 13:30 New York settlement. Which model can forecast it depends on the time:
 
@@ -229,6 +279,8 @@ The intraday models are trained on states *inside* a session and have no valid i
 **Learning** — the worker/runtime and its next jobs; the active model **separately for each horizon**; candidates and their latest decisions; the number of **distinct matured forecast origins** per horizon; predicted vs actual and rolling error vs the unchanged price; range **coverage and width**; training history (*improved / worsened / no meaningful change*, with a noise tolerance); data quality; every training attempt including failures. **Genuine forward results** (recorded before the outcome existed) and **walk-forward history** (development evidence, re-examined daily) are separate blocks.
 
 **Paper trading** — see below. **Alerts & settings** — the alerts panel, the tracked Trading 212 position, the background service (runtime, commands) and data sources.
+
+</details>
 
 ### Forecast timing, and the one genuine provider delay
 
@@ -269,6 +321,9 @@ The loop is the one in [The daily loop](#the-daily-loop). This section is what i
 
 ### Candidate models versus active models
 
+<details>
+<summary><b>Active, challenger, rejected and baseline</b></summary>
+
 Each forecast task (`nowcast`, `fwd_1`, `fwd_5`, `fwd_20`) has exactly one **active model** (the *champion*), whose forecast is the one you see after pressing Predict. Everything else is a **candidate**:
 
 | Status | Meaning |
@@ -280,7 +335,12 @@ Each forecast task (`nowcast`, `fwd_1`, `fwd_5`, `fwd_20`) has exactly one **act
 
 Candidates are bounded: ridge, gradient boosting and random forest on gold-only and gold + market-driver features, plus ridge and gradient boosting on chart-pattern and Fibonacci features. That is 10 per horizon: 1 champion, 7 live challengers and 2 rejected. A new candidate is added only by changing code, never by the loop itself.
 
+</details>
+
 ### Promotion and rollback
+
+<details>
+<summary><b>The two gates, and how a model is rolled back</b></summary>
 
 ```mermaid
 stateDiagram-v2
@@ -299,7 +359,12 @@ A challenger replaces the champion for **one horizon** only if it passes **both*
 
 At most one promotion per horizon per 30 days; anything less keeps the incumbent, and the reason is written down every day. **Rollback** is automatic if a promoted champion trails the unchanged price by 5% or more over at least 20 forward blocks, and manual any time: `cd backend && PYTHONPATH=. .venv/bin/python -m app.worker rollback fwd_5`. The criteria themselves are never changed by the loop. A failed retrain or evaluation keeps the working champion and is logged as a failure, not hidden. Across the first run no challenger passed even gate 1, so every horizon **retained** its incumbent.
 
+</details>
+
 ### How the 1-, 5- and 20-session forecasts learn from matured outcomes
+
+<details>
+<summary><b>How each horizon learns from matured outcomes</b></summary>
 
 Each horizon is learned separately. The forecast for session `t + h` (h = 1, 5 or 20 sessions) is issued after session `t` closes, and then:
 
@@ -311,7 +376,12 @@ Each horizon is learned separately. The forecast for session `t + h` (h = 1, 5 o
 
 **Is that "self-improving"?** Not by itself. A job running is not improvement. The Learning page compares successive evaluations and labels the change *improved*, *worsened* or *no meaningful change* (a 0.25-point tolerance for noise). So far the label is *no meaningful change*.
 
+</details>
+
 ### Ledger, features, and keeping data honest
+
+<details>
+<summary><b>Ledger, feature groups, quarantine</b></summary>
 
 - **Ledger** (`backend/data/gold.db`, SQLite): every forecast stores its id, instrument and exact target definition, model version, feature schema, issue time, input cutoff, base price, **dataset hash (the exact inputs)**, target time, prediction and range. The database itself **rejects edits and deletes** of forecasts, and outcomes are write-once. A retrained model issues new forecasts; it never rewrites old ones. A re-issue of an existing forecast id from a *different* dataset snapshot is ignored (the original and its timestamp stand) **and recorded** in `ledger_audit`, never silently reused.
 - **Only matured labels train anything.** A 20-session forecast is not a training example until its target session exists, and many forecasts for the same target are not many independent outcomes. Live price ticks never train anything.
@@ -320,9 +390,16 @@ Each horizon is learned separately. The forecast for session `t + h` (h = 1, 5 o
 - **No reusable "untouched test".** Walk-forward numbers are development evidence and are labelled so. Only the forward record is out-of-sample proof. Every candidate attempt, **including failures**, is logged. A failed evaluation or retrain keeps the working champion, and forecasts for a new session are still published.
 - **"Self-cleaning" means detect, record, quarantine — never delete.** Duplicate/out-of-order rows, invalid highs, wrong units, a stale feed (by the exchange calendar) and provider schema changes are written to `data_quarantine` with the raw observation verbatim. Large moves are *checked* (does the day's high agree? did the next session reverse it?) and kept, not removed for being large. Only a schema change, wrong units or a stale feed block learning. Poor predictions, losing trades and failed experiments are never erased, and source code or promotion criteria are never rewritten automatically.
 
+</details>
+
 ## Paper trading (simulation only)
 
+<details>
+<summary><b>How the simulated book works</b></summary>
+
 Gold only. A *book* is a simulated account (cash, at most one long position, fills, equity snapshots, frozen risk and cost parameters). Entries follow a rule, not a model's mood: a **stored, immutable forecast** (default: the 5-session champion; its id is written on the fill) must predict a return that beats the round-trip cost plus a margin; long or flat only. Exits: the forecast's target time, a stop-loss, or a risk limit (daily loss, drawdown), which also **pauses** the book. Configurable deterministic limits: position size, stop-loss, daily loss, drawdown, fills per day, cooldown, quote age. Fills use the delayed futures quote plus an **assumed** spread and slippage (editable; not a fact about any broker). Each decision is posted at most once. **Start a fresh book** archives the old one; nothing is deleted. The page compares the book with **holding gold** and **cash**, and reports **forecast accuracy separately from profit**. There is **no broker integration and no live order endpoint**; a test fails if the paper module ever imports a network or broker library. Architecture ideas (a risk gate that can only reduce activity, an append-only fill ledger, persisted pause and loss windows) come from [Martysunshine/ai-stock-trader](https://github.com/Martysunshine/ai-stock-trader) (MIT, © 2026 Martin Matysek); no code was copied.
+
+</details>
 
 ## State-changing API calls are local-only
 
@@ -335,6 +412,9 @@ Gold only. A *book* is a simulated account (cash, at most one long position, fil
 </details>
 
 ## Current measured results
+
+<details open>
+<summary><b>Tables: active models, every candidate, Fibonacci vs its twin, and the written findings</b></summary>
 
 Taken from the Learning page's live data, **data through 2026-11-17** (589–598 identical forecast dates per horizon; the ledger itself began on 17 Nov 2026). Numbers change as the worker re-runs; the Learning page is authoritative. **Error vs unchanged** = mean absolute error relative to "the price stays put": **below 0% is better, above 0% is worse.**
 
@@ -387,6 +467,8 @@ The pre-set rule (below) needed a reliable improvement at two or more horizons. 
 - **News** is archived with original and first-seen timestamps and de-duplicated, but is **not a model input**: reliable historical news is unavailable, and an LLM's memory of past headlines is not a point-in-time record. It needs months of forward data before it can be evaluated. LLM event extraction is intentionally not enabled.
 - **Range calibration, by horizon** (chronological walk-forward; each range uses only earlier information; ranges are not tuned after the fact). Historical coverage vs the claimed 80%: **1 session 81%** (90% interval 78–84), **5 sessions 78%** (74–83), **20 sessions 70%** (61–79; by period 71 / 79 / **61**), average widths 3.5% / 8.0% / 14.4% of price. The 20-session range is shown as **Under-calibrated** (more than 8 points below target) and is weakest in the most recent period.
 
+</details>
+
 ## Alerts (sell-review notifications)
 
 <details>
@@ -413,6 +495,9 @@ cd backend && PYTHONPATH=. .venv/bin/python -m app.worker threshold --force     
 
 ## Verified manually vs on schedule
 
+<details open>
+<summary><b>What was checked, how, and what is still unobserved</b></summary>
+
 Only what the persistent records show is claimed. Check any line yourself: `./scripts/worker.sh cycles` (full cycles), `./scripts/worker.sh status` (jobs), or query `job_runs` / `cycle_runs` in `backend/data/gold.db`.
 
 | Claim | How it was checked | Status |
@@ -432,7 +517,12 @@ Only what the persistent records show is claimed. Check any line yourself: `./sc
 
 **How the first scheduled cycle will be confirmed.** After 23:30 UTC with the Mac awake and online, run `./scripts/worker.sh cycles`. A line reading `1 scheduled cycle(s) recorded with status ok` plus a row with `scheduled` and all eight steps is the confirmation. If it says `No scheduled cycle has been recorded yet`, it did not run (for example because the Mac slept), whatever this README says.
 
+</details>
+
 ## Development
+
+<details>
+<summary><b>Tests, layout and settings</b></summary>
 
 ```bash
 cd backend && .venv/bin/python -m pytest -q          # 265 tests
@@ -445,3 +535,6 @@ bash e2e/run_pages.sh                                             # 54 Learning 
 Layout: `backend/app/` — `market.py` (OHLC and summaries), `nowcast.py`, `learning.py` + `registry.py` + `ledger.py` + `db.py` (the loop), `feature_groups.py` (patterns, Fibonacci), `quality.py` (quarantine), `paper.py` (simulation), `workspace.py` (Learning payload), `drivers.py` + `research_drivers.py`, `alerts.py` + `n8n_link.py` + `review.py` + `threshold_research.py`, `worker.py` (daemon and CLI); `frontend/src/` — the four pages; `scripts/worker.sh` + `scripts/launchd/`; `deploy/` — always-on worker files (untested here); `n8n/` — the alert workflow.
 
 Optional settings live in `.env` (see `.env.example`); `GOLD_EMBEDDED_WORKER=0` stops the web app from starting its own worker, `GOLD_OFFLINE=1` disables all external calls, `GOLD_API_TOKEN` protects state-changing calls. For information only; not investment advice.
+
+</details>
+
